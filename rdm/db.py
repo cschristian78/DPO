@@ -13,8 +13,9 @@ def build_connection_string(server, database, driver, use_windows_auth=True,
         f"DRIVER={{{driver}}}",
         f"SERVER={server}",
         f"DATABASE={database}",
-        "Encrypt=no",
-        f"Connection Timeout={timeout}",
+        "Encrypt=yes",
+        "TrustServerCertificate=yes",
+        f"Login Timeout={timeout}",
     ]
     if use_windows_auth:
         parts.append("Trusted_Connection=yes")

@@ -6,3 +6,5 @@ App_Data/
 config.yaml
 logs/
 *.log
+bin/
+obj/

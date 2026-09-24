@@ -1,25 +1,26 @@
 {% extends "base.html" %}
-{% block title %}New Analysis - Dynamic Portfolio Optimization{% endblock %}
+{% block title %}Edit Analysis - Dynamic Portfolio Optimization{% endblock %}
 {% block content %}
-<h1>New Analysis</h1>
-<p class="muted">Create an analysis in BMS_DPO. Next saves this header in tAnalysis and opens analysis settings.</p>
+<h1>Edit Analysis</h1>
+<p class="muted">{{ analysis.name }} · Analysis {{ analysis.id }}</p>
 
+{% if saved %}<div class="alert alert-success">Analysis was saved.</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 
 <div class="analysis-layout">
-<form method="post" action="{{ url_for('create_analysis') }}" class="card form wide" id="new-analysis">
+<form method="post" action="{{ url_for('update_analysis', analysis_id=analysis.id) }}" class="card form wide" id="new-analysis" data-keep="1" data-analysis-id="{{ analysis.rdm_analysis_id }}">
   <div class="form-grid">
     <label for="analysis-name">Analysis name</label>
-    <input id="analysis-name" name="analysis_name" required>
+    <input id="analysis-name" name="analysis_name" value="{{ analysis.name }}" required>
 
     <label for="analysis-description">Description</label>
-    <input id="analysis-description" name="analysis_description">
+    <input id="analysis-description" name="analysis_description" value="{{ analysis.description }}">
 
     <label for="client">Client</label>
     <select id="client" name="client_id" required>
       <option value="">Select a client</option>
       {% for c in clients %}
-      <option value="{{ c.id }}" data-short="{{ c.short_name }}">{{ c.name }}</option>
+      <option value="{{ c.id }}" data-short="{{ c.short_name }}"{% if c.id == analysis.client_id %} selected{% endif %}>{{ c.name }}</option>
       {% endfor %}
     </select>
 
@@ -27,7 +28,7 @@
     <div class="rdm-field">
       <span class="inline-field">
         <select id="rdm-database" name="rdm_name" required>
-          <option value="">Select a client first</option>
+          <option value="{{ analysis.rdm_name }}" selected>{{ analysis.rdm_name }}</option>
         </select>
         <input id="rdm-database-search" list="rdm-database-list" autocomplete="off" placeholder="Type to search RDM databases" hidden>
         <datalist id="rdm-database-list"></datalist>
@@ -38,23 +39,25 @@
 
     <label for="rdm-analysis">RDM analysis</label>
     <select id="rdm-analysis" required>
-      <option value="">Select an RDM database</option>
+      <option value="">{{ analysis.rdm_analysis_name }}</option>
     </select>
 
     <label for="edm-name">EDM name</label>
-    <input id="edm-name" name="edm_name" readonly>
+    <input id="edm-name" name="edm_name" value="{{ analysis.edm_name }}" readonly>
 
     <label for="portfolio-id">Portfolio ID</label>
-    <input id="portfolio-id" name="portfolio_id" readonly>
+    <input id="portfolio-id" name="portfolio_id" value="{{ analysis.portfolio_id or '' }}" readonly>
 
     <label for="peril">Peril</label>
-    <input id="peril" name="peril" readonly>
+    <input id="peril" name="peril" value="{{ analysis.peril }}" readonly>
   </div>
-  <input type="hidden" name="rdm_analysis_id" id="rdm-analysis-id">
-  <input type="hidden" name="rdm_analysis_name" id="rdm-analysis-name">
-  <p class="field-help">Analysis name, description, and client are entered here. The client short name filters the RDM list. EDM name, portfolio, and peril are copied from the selected RDM analysis.</p>
+  <input type="hidden" name="rdm_analysis_id" id="rdm-analysis-id" value="{{ analysis.rdm_analysis_id }}">
+  <input type="hidden" name="rdm_analysis_name" id="rdm-analysis-name" value="{{ analysis.rdm_analysis_name }}">
+  <p class="field-help">Change the RDM analysis to refresh EDM name, portfolio, and peril. Client choices are active clients from BMS_CMS.</p>
   <div class="button-row">
-    <button type="submit" class="primary-button" id="create-analysis">Next</button>
+    <button type="submit" class="primary-button">Save analysis</button>
+    <a class="secondary-button" href="{{ url_for('analysis_settings', analysis_id=analysis.id) }}">Settings</a>
+    <a class="secondary-button" href="{{ url_for('analysis_list') }}">Back to list</a>
   </div>
 </form>
 <aside class="card summary-panel" id="port-summary" aria-live="polite">

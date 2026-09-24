@@ -98,11 +98,34 @@ def _open_saved(saved, database, use_windows_auth):
         password=saved.get("password", ""))
 
 
-def _open_dpo():
+def _dpo_saved():
     saved = rdm_settings.load()
     if not (saved.get("server") or "").strip():
         raise RuntimeError("Set the DPO server under Admin, Server, DPO Server.")
+    return saved
+
+
+def _open_dpo():
+    saved = _dpo_saved()
     return _open_saved(saved, saved.get("database") or "BMS_DPO", saved["use_integrated_security"])
+
+
+def _open_cms():
+    """Same server and login as DPO, catalog BMS_CMS, where client names live."""
+    saved = _dpo_saved()
+    return _open_saved(saved, "BMS_CMS", saved["use_integrated_security"])
+
+
+def _load_clients():
+    conn = _open_cms()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ClientID, ClientName, ClientShortName FROM dbo.tClient "
+            "WHERE ClientStatus = 'Active' ORDER BY ClientName")
+        return [{"id": int(r[0]), "name": r[1], "short_name": (r[2] or "").strip()} for r in cur.fetchall()]
+    finally:
+        conn.close()
 
 
 def _moodys_login():
@@ -128,19 +151,15 @@ def _first_value(cur):
 
 
 def _dpo_form_lists():
-    """Active CMS clients and the loss level / perspective lookups."""
+    """Loss level and perspective lookups stored in BMS_DPO."""
     conn = _open_dpo()
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT ClientID, ClientName FROM BMS_CMS.dbo.tClient "
-            "WHERE ClientStatus = 'Active' ORDER BY ClientName")
-        clients = [{"id": int(r[0]), "name": r[1]} for r in cur.fetchall()]
         cur.execute("SELECT LossLevelName FROM dbo.tLossLevel ORDER BY LossLevelID")
         levels = [r[0] for r in cur.fetchall()]
         cur.execute("SELECT LossPerspectiveCode FROM dbo.tLossPerspective ORDER BY LossPerspectiveID")
         perspectives = [r[0] for r in cur.fetchall()]
-        return clients, levels, perspectives
+        return levels, perspectives
     finally:
         conn.close()
 
@@ -154,20 +173,13 @@ def index():
 
 @app.route("/new")
 def new_analysis():
-    clients, levels, perspectives = [], [], []
+    clients = []
     error = request.args.get("error")
     try:
-        clients, levels, perspectives = _dpo_form_lists()
+        clients = _load_clients()
     except Exception as exc:
-        error = error or str(exc)
-    if not levels:
-        levels = ["Account", "Policy", "Location", "Lob", "Other"]
-    if not perspectives:
-        perspectives = ["GU", "GR", "RL"]
-    created = request.args.get("created")
-    return render_template(
-        "connect.html", clients=clients, loss_levels=levels,
-        perspectives=perspectives, error=error, created=created)
+        error = error or f"Could not read clients from BMS_CMS: {exc}"
+    return render_template("connect.html", clients=clients, error=error)
 
 
 @app.route("/api/rdm-databases")
@@ -190,7 +202,7 @@ def api_rdm_databases():
 def api_rdm_client():
     database = request.args.get("database", "").strip()
     try:
-        conn = _open_dpo()
+        conn = _open_cms()
         try:
             match = client_match.match_client(conn, database)
         finally:
@@ -224,6 +236,48 @@ def api_rdm_analyses():
     return jsonify({"analyses": rows})
 
 
+@app.route("/api/rdm-portstats")
+def api_rdm_portstats():
+    database = request.args.get("database", "").strip()
+    try:
+        analysis_id = int(request.args.get("analysis", "").strip())
+    except ValueError:
+        return jsonify({"error": "Analysis id is required."}), 400
+    try:
+        conn = _open_moodys(database)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        RTRIM(PERSPCODE) AS PerspCode,
+                        PUREPREMIUM,
+                        TOTALSTDDEV,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY RTRIM(PERSPCODE)
+                            ORDER BY EPTYPE
+                        ) AS rn
+                    FROM dbo.rdm_portstats
+                    WHERE ANLSID = ?
+                )
+                SELECT PerspCode, PUREPREMIUM, TOTALSTDDEV
+                FROM ranked
+                WHERE rn = 1
+                """,
+                analysis_id)
+            stats = [{
+                "perspective": (r[0] or "").strip(),
+                "aal": None if r[1] is None or r[1] < 0 else float(r[1]),
+                "stdDev": None if r[2] is None or r[2] < 0 else float(r[2]),
+            } for r in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"stats": stats})
+
+
 @app.route("/new", methods=["POST"])
 def create_analysis():
     name = request.form.get("analysis_name", "").strip()
@@ -235,14 +289,8 @@ def create_analysis():
     rdm_analysis_id = request.form.get("rdm_analysis_id", "").strip()
     rdm_analysis_name = request.form.get("rdm_analysis_name", "").strip()
     peril = request.form.get("peril", "").strip() or None
-    loss_level = request.form.get("loss_level", "").strip()
-    perspective = request.form.get("loss_perspective", "").strip()
     if not name or not client_id or not rdm_name or not rdm_analysis_id or not rdm_analysis_name:
         return redirect(url_for("new_analysis", error="Analysis name, client, and an RDM analysis are required."))
-    if loss_level not in ("Account", "Policy", "Location", "Lob", "Other"):
-        return redirect(url_for("new_analysis", error="Loss level is not recognized."))
-    if perspective not in ("GU", "GR", "RL"):
-        return redirect(url_for("new_analysis", error="Loss perspective is not recognized."))
     try:
         portfolio_id = int(portfolio_raw) if portfolio_raw else None
         rdm_id = int(rdm_analysis_id)
@@ -265,6 +313,110 @@ def create_analysis():
                 name, description, client, edm_name, portfolio_id, rdm_name,
                 rdm_id, rdm_analysis_name, peril)
             analysis_id = _first_value(cur)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return redirect(url_for("new_analysis", error=f"Could not create the analysis: {exc}"))
+    return redirect(url_for("analysis_settings", analysis_id=analysis_id))
+
+
+_PERSPECTIVE_LABELS = {
+    "GU": "Ground up",
+    "GR": "Gross",
+    "RL": "Net",
+}
+
+
+def _analysis_header(analysis_id):
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute("EXEC dbo.usp_Analysis_Get @AnalysisID=?", analysis_id)
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row[0]),
+            "name": row[1],
+            "description": row[2] or "",
+            "client_id": int(row[3]),
+            "edm_name": row[4] or "",
+            "portfolio_id": row[5],
+            "rdm_name": row[6],
+            "rdm_analysis_id": int(row[7]),
+            "rdm_analysis_name": row[8],
+            "peril": row[9] or "",
+        }
+    finally:
+        conn.close()
+
+
+def _analysis_settings_rows(analysis_id):
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute("EXEC dbo.usp_AnalysisSettings_List @AnalysisID=?", analysis_id)
+        rows = []
+        for r in cur.fetchall():
+            created = r[4]
+            rows.append({
+                "id": int(r[0]),
+                "analysis_id": int(r[1]),
+                "loss_level": r[2],
+                "loss_perspective": r[3],
+                "created_at": created.strftime("%Y-%m-%d %H:%M") if created else "",
+            })
+        return rows
+    finally:
+        conn.close()
+
+
+@app.route("/analysis/<int:analysis_id>/settings")
+def analysis_settings(analysis_id):
+    try:
+        analysis = _analysis_header(analysis_id)
+        levels, perspectives = _dpo_form_lists()
+        settings = _analysis_settings_rows(analysis_id)
+    except Exception as exc:
+        return redirect(url_for("new_analysis", error=f"Could not open analysis settings: {exc}"))
+    if not analysis:
+        return redirect(url_for("new_analysis", error="Analysis was not found."))
+    if not levels:
+        levels = ["Account", "Policy", "Location", "Lob", "Other"]
+    if not perspectives:
+        perspectives = ["GU", "GR", "RL"]
+    perspective_choices = [
+        {"code": code, "label": _PERSPECTIVE_LABELS.get(code, code)}
+        for code in perspectives
+    ]
+    return render_template(
+        "analysis_settings.html",
+        analysis=analysis,
+        settings=settings,
+        loss_levels=levels,
+        perspectives=perspective_choices,
+        error=request.args.get("error"),
+        saved=request.args.get("saved"),
+    )
+
+
+@app.route("/analysis/<int:analysis_id>/settings", methods=["POST"])
+def save_analysis_settings(analysis_id):
+    loss_level = request.form.get("loss_level", "").strip()
+    perspective = request.form.get("loss_perspective", "").strip()
+    if loss_level not in ("Account", "Policy", "Location", "Lob", "Other"):
+        return redirect(url_for(
+            "analysis_settings", analysis_id=analysis_id,
+            error="Loss level is not recognized."))
+    if perspective not in ("GU", "GR", "RL"):
+        return redirect(url_for(
+            "analysis_settings", analysis_id=analysis_id,
+            error="Loss perspective is not recognized."))
+    try:
+        conn = _open_dpo()
+        try:
+            cur = conn.cursor()
             cur.execute(
                 """
                 DECLARE @AnalysisSettingsID INT;
@@ -279,8 +431,154 @@ def create_analysis():
         finally:
             conn.close()
     except Exception as exc:
-        return redirect(url_for("new_analysis", error=f"Could not create the analysis: {exc}"))
-    return redirect(url_for("new_analysis", created=analysis_id))
+        message = str(exc)
+        if "UQ_tAnalysisSettings" in message or "duplicate" in message.lower():
+            message = "That loss level and loss perspective are already saved for this analysis."
+        else:
+            message = f"Could not save analysis settings: {exc}"
+        return redirect(url_for("analysis_settings", analysis_id=analysis_id, error=message))
+    return redirect(url_for("analysis_settings", analysis_id=analysis_id, saved="1"))
+
+
+def _analysis_form_values():
+    name = request.form.get("analysis_name", "").strip()
+    description = request.form.get("analysis_description", "").strip() or None
+    client_id = request.form.get("client_id", "").strip()
+    edm_name = request.form.get("edm_name", "").strip() or None
+    portfolio_raw = request.form.get("portfolio_id", "").strip()
+    rdm_name = request.form.get("rdm_name", "").strip()
+    rdm_analysis_id = request.form.get("rdm_analysis_id", "").strip()
+    rdm_analysis_name = request.form.get("rdm_analysis_name", "").strip()
+    peril = request.form.get("peril", "").strip() or None
+    if not name or not client_id or not rdm_name or not rdm_analysis_id or not rdm_analysis_name:
+        raise ValueError("Analysis name, client, and an RDM analysis are required.")
+    try:
+        portfolio_id = int(portfolio_raw) if portfolio_raw else None
+        rdm_id = int(rdm_analysis_id)
+        client = int(client_id)
+    except ValueError as exc:
+        raise ValueError("Client, portfolio, and RDM analysis id must be numbers.") from exc
+    return (name, description, client, edm_name, portfolio_id, rdm_name,
+            rdm_id, rdm_analysis_name, peril)
+
+
+def _list_analyses():
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute("EXEC dbo.usp_Analysis_List")
+        rows = []
+        for r in cur.fetchall():
+            created = r[10]
+            rows.append({
+                "id": int(r[0]),
+                "name": r[1],
+                "description": r[2] or "",
+                "client_id": int(r[3]),
+                "edm_name": r[4] or "",
+                "portfolio_id": r[5] if r[5] is not None else "",
+                "rdm_name": r[6],
+                "rdm_analysis_name": r[8],
+                "peril": r[9] or "",
+                "created_at": created.strftime("%Y-%m-%d %H:%M") if created else "",
+            })
+        return rows
+    finally:
+        conn.close()
+
+
+@app.route("/analysis-list")
+def analysis_list():
+    error = request.args.get("error")
+    rows = []
+    clients = {}
+    try:
+        rows = _list_analyses()
+        clients = {c["id"]: c["name"] for c in _load_clients()}
+    except Exception as exc:
+        error = error or str(exc)
+    for row in rows:
+        row["client_name"] = clients.get(row["client_id"], str(row["client_id"]))
+    return render_template(
+        "analysis_list.html", rows=rows, error=error,
+        saved=request.args.get("saved"))
+
+
+@app.route("/analysis/<int:analysis_id>/edit")
+def edit_analysis(analysis_id):
+    try:
+        analysis = _analysis_header(analysis_id)
+        clients = _load_clients()
+    except Exception as exc:
+        return redirect(url_for("analysis_list", error=str(exc)))
+    if not analysis:
+        return redirect(url_for("analysis_list", error="Analysis was not found."))
+    return render_template(
+        "edit_analysis.html", analysis=analysis, clients=clients,
+        error=request.args.get("error"), saved=request.args.get("saved"))
+
+
+@app.route("/analysis/<int:analysis_id>/edit", methods=["POST"])
+def update_analysis(analysis_id):
+    try:
+        values = _analysis_form_values()
+    except ValueError as exc:
+        return redirect(url_for("edit_analysis", analysis_id=analysis_id, error=str(exc)))
+    try:
+        conn = _open_dpo()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                EXEC dbo.usp_Analysis_Update
+                    @AnalysisID=?, @AnalysisName=?, @AnalysisDescription=?, @ClientID=?,
+                    @EdmName=?, @PortfolioID=?, @RdmName=?, @RdmAnalysisID=?,
+                    @RdmAnalysisName=?, @Peril=?;
+                """,
+                analysis_id, *values)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return redirect(url_for(
+            "edit_analysis", analysis_id=analysis_id,
+            error=f"Could not update the analysis: {exc}"))
+    return redirect(url_for("edit_analysis", analysis_id=analysis_id, saved="1"))
+
+
+@app.route("/analysis/<int:analysis_id>/settings/<int:settings_id>", methods=["POST"])
+def update_analysis_settings(analysis_id, settings_id):
+    loss_level = request.form.get("loss_level", "").strip()
+    perspective = request.form.get("loss_perspective", "").strip()
+    if loss_level not in ("Account", "Policy", "Location", "Lob", "Other"):
+        return redirect(url_for(
+            "analysis_settings", analysis_id=analysis_id,
+            error="Loss level is not recognized."))
+    if perspective not in ("GU", "GR", "RL"):
+        return redirect(url_for(
+            "analysis_settings", analysis_id=analysis_id,
+            error="Loss perspective is not recognized."))
+    try:
+        conn = _open_dpo()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                EXEC dbo.usp_AnalysisSettings_Update
+                    @AnalysisSettingsID=?, @LossLevelName=?, @LossPerspectiveCode=?;
+                """,
+                settings_id, loss_level, perspective)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        message = str(exc)
+        if "50006" in message or "already saved" in message.lower() or "UQ_tAnalysisSettings" in message:
+            message = "That loss level and loss perspective are already saved for this analysis."
+        else:
+            message = f"Could not update analysis settings: {exc}"
+        return redirect(url_for("analysis_settings", analysis_id=analysis_id, error=message))
+    return redirect(url_for("analysis_settings", analysis_id=analysis_id, saved="1"))
 
 
 @app.route("/admin")

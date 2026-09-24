@@ -320,6 +320,39 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.usp_Analysis_Update
+    @AnalysisID          INT,
+    @AnalysisName        NVARCHAR(255),
+    @AnalysisDescription NVARCHAR(1000) = NULL,
+    @ClientID            INT,
+    @EdmName             NVARCHAR(255) = NULL,
+    @PortfolioID         INT = NULL,
+    @RdmName             NVARCHAR(128),
+    @RdmAnalysisID       INT,
+    @RdmAnalysisName     NVARCHAR(255),
+    @Peril               NVARCHAR(64) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.tAnalysis WHERE AnalysisID = @AnalysisID)
+        THROW 50002, 'Analysis was not found.', 1;
+
+    UPDATE dbo.tAnalysis
+    SET AnalysisName = @AnalysisName,
+        AnalysisDescription = @AnalysisDescription,
+        ClientID = @ClientID,
+        EdmName = @EdmName,
+        PortfolioID = @PortfolioID,
+        RdmName = @RdmName,
+        RdmAnalysisID = @RdmAnalysisID,
+        RdmAnalysisName = @RdmAnalysisName,
+        Peril = @Peril,
+        ModifiedAt = SYSUTCDATETIME()
+    WHERE AnalysisID = @AnalysisID;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.usp_AnalysisSettings_Create
     @AnalysisID            INT,
     @LossLevelName         VARCHAR(32),
@@ -377,6 +410,53 @@ BEGIN
         ON p.LossPerspectiveID = s.LossPerspectiveID
     WHERE s.AnalysisID = @AnalysisID
     ORDER BY s.AnalysisSettingsID;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_AnalysisSettings_Update
+    @AnalysisSettingsID    INT,
+    @LossLevelName         VARCHAR(32),
+    @LossPerspectiveCode   VARCHAR(4)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @AnalysisID INT;
+    DECLARE @LossLevelID INT;
+    DECLARE @LossPerspectiveID INT;
+
+    SELECT @AnalysisID = AnalysisID
+    FROM dbo.tAnalysisSettings
+    WHERE AnalysisSettingsID = @AnalysisSettingsID;
+
+    IF @AnalysisID IS NULL
+        THROW 50005, 'Analysis settings were not found.', 1;
+
+    SELECT @LossLevelID = LossLevelID
+    FROM dbo.tLossLevel
+    WHERE LossLevelName = @LossLevelName;
+
+    SELECT @LossPerspectiveID = LossPerspectiveID
+    FROM dbo.tLossPerspective
+    WHERE LossPerspectiveCode = @LossPerspectiveCode;
+
+    IF @LossLevelID IS NULL OR @LossPerspectiveID IS NULL
+        THROW 50001, 'Loss level or loss perspective is not recognized.', 1;
+
+    IF EXISTS (
+        SELECT 1
+        FROM dbo.tAnalysisSettings
+        WHERE AnalysisID = @AnalysisID
+          AND LossLevelID = @LossLevelID
+          AND LossPerspectiveID = @LossPerspectiveID
+          AND AnalysisSettingsID <> @AnalysisSettingsID
+    )
+        THROW 50006, 'That loss level and loss perspective are already saved for this analysis.', 1;
+
+    UPDATE dbo.tAnalysisSettings
+    SET LossLevelID = @LossLevelID,
+        LossPerspectiveID = @LossPerspectiveID
+    WHERE AnalysisSettingsID = @AnalysisSettingsID;
 END;
 GO
 

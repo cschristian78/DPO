@@ -23,7 +23,7 @@ def match_client(conn, database_name):
     cur.execute(
         """
         SELECT TOP (1) ClientID, ClientName, ClientShortName
-        FROM BMS_CMS.dbo.tClient
+        FROM dbo.tClient
         WHERE ClientStatus = 'Active'
           AND ClientShortName = ?
         """,

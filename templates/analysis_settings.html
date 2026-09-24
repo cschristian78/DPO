@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Analysis Settings - Dynamic Portfolio Optimization{% endblock %}
+{% block content %}
+<h1>Analysis Settings</h1>
+<p class="muted">{{ analysis.name }} · Analysis {{ analysis.id }}</p>
+
+{% if saved %}<div class="alert alert-success">Settings were saved.</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<form method="post" action="{{ url_for('save_analysis_settings', analysis_id=analysis.id) }}" class="card form wide">
+  <div class="form-grid">
+    <label for="analysis-id">Analysis ID</label>
+    <input id="analysis-id" value="{{ analysis.id }}" readonly>
+
+    <label for="loss-level">Loss level</label>
+    <select id="loss-level" name="loss_level" required>
+      {% for level in loss_levels %}
+      <option value="{{ level }}">{{ level }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="loss-perspective">Loss perspective</label>
+    <select id="loss-perspective" name="loss_perspective" required>
+      {% for p in perspectives %}
+      <option value="{{ p.code }}">{{ p.code }} — {{ p.label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <p class="field-help">Loss level and loss perspective are stored on tAnalysisSettings. Created time is set when the row is saved. Each pair can be saved once for this analysis.</p>
+  <div class="button-row">
+    <button type="submit" class="primary-button">Save settings</button>
+    <a class="secondary-button" href="{{ url_for('edit_analysis', analysis_id=analysis.id) }}">Edit analysis</a>
+    <a class="secondary-button" href="{{ url_for('analysis_list') }}">Back to list</a>
+  </div>
+</form>
+
+<h2>Saved settings</h2>
+{% if settings %}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>Analysis settings ID</th>
+      <th>Analysis ID</th>
+      <th>Loss level</th>
+      <th>Loss perspective</th>
+      <th>Created</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in settings %}
+    <tr>
+      <td>{{ row.id }}</td>
+      <td>{{ row.analysis_id }}</td>
+      <td colspan="3">
+        <form method="post" action="{{ url_for('update_analysis_settings', analysis_id=analysis.id, settings_id=row.id) }}" class="inline-field">
+          <select name="loss_level" aria-label="Loss level">
+            {% for level in loss_levels %}
+            <option value="{{ level }}"{% if level == row.loss_level %} selected{% endif %}>{{ level }}</option>
+            {% endfor %}
+          </select>
+          <select name="loss_perspective" aria-label="Loss perspective">
+            {% for p in perspectives %}
+            <option value="{{ p.code }}"{% if p.code == row.loss_perspective %} selected{% endif %}>{{ p.code }} — {{ p.label }}</option>
+            {% endfor %}
+          </select>
+          <span class="muted-sm">{{ row.created_at }}</span>
+          <button type="submit" class="secondary-button">Update</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No settings saved yet.</p>
+{% endif %}
+{% endblock %}
