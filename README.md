@@ -1,4 +1,4 @@
-# Portfolio PML Optimizer
+# Dynamic Portfolio Optimization
 
 A small self-contained web app that runs **leave-one-out marginal PML analysis**
 against your RDM databases on SQL Server.
