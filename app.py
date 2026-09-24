@@ -171,6 +171,11 @@ def index():
     return render_template("home.html")
 
 
+@app.route("/reports")
+def reports():
+    return render_template("reports.html")
+
+
 @app.route("/new")
 def new_analysis():
     clients = []
@@ -501,7 +506,23 @@ def analysis_list():
         row["client_name"] = clients.get(row["client_id"], str(row["client_id"]))
     return render_template(
         "analysis_list.html", rows=rows, error=error,
-        saved=request.args.get("saved"))
+        saved=request.args.get("saved"),
+        deleted=request.args.get("deleted"))
+
+
+@app.route("/analysis/<int:analysis_id>/delete", methods=["POST"])
+def delete_analysis(analysis_id):
+    try:
+        conn = _open_dpo()
+        try:
+            cur = conn.cursor()
+            cur.execute("EXEC dbo.usp_Analysis_Delete @AnalysisID=?", analysis_id)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return redirect(url_for("analysis_list", error=f"Could not delete the analysis: {exc}"))
+    return redirect(url_for("analysis_list", deleted="1"))
 
 
 @app.route("/analysis/<int:analysis_id>/edit")

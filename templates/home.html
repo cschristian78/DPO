@@ -6,11 +6,12 @@
   <header class="app-hub-brand">
     <h1 class="app-hub-headline">
       <div class="app-hub-earth-wrap">
-        <img src="{{ url_for('static', filename='images/earth-north-pole.png') }}" alt="" class="app-hub-earth" aria-hidden="true">
+        <img src="{{ url_for('static', filename='images/splash.png') }}" alt="" class="app-hub-earth" aria-hidden="true">
         <div class="app-hub-brand-overlay">
-          <span class="app-hub-brand-mark" aria-label="Dynamic Portfolio Optimization">
+          <span class="app-hub-brand-mark" aria-label="DPO">
             <span class="logo-accent">Dynamic</span>
-            <span class="app-hub-brand-rest"> Portfolio Optimization</span>
+            <span>P</span>
+            <span>O</span>
           </span>
         </div>
       </div>
@@ -19,21 +20,21 @@
   <div class="app-hub-apps">
     <p class="app-hub-eyebrow">Select Application</p>
     <nav class="app-hub-tiles" aria-label="Applications">
-      <a class="app-hub-tile" href="{{ url_for('new_analysis') }}">
-        <span class="app-hub-tile-code" aria-hidden="true">
-          <span class="logo-accent">N</span><span class="logo-rest">A</span>
-        </span>
-        <span class="app-hub-tile-title">New Analysis</span>
-        <span class="app-hub-tile-desc">Leave-one-out marginal PML analysis against an RDM database.</span>
-        <span class="app-hub-tile-cta">Start</span>
-      </a>
       <a class="app-hub-tile" href="{{ url_for('analysis_list') }}">
         <span class="app-hub-tile-code" aria-hidden="true">
-          <span class="logo-accent">A</span><span class="logo-rest">N</span>
+          <span class="logo-accent">N</span><span class="logo-rest">E</span>
         </span>
-        <span class="app-hub-tile-title">Analyses</span>
-        <span class="app-hub-tile-desc">Open a saved analysis to edit its header or settings.</span>
-        <span class="app-hub-tile-cta">View</span>
+        <span class="app-hub-tile-title">New / Edit Analysis</span>
+        <span class="app-hub-tile-desc">Open the analysis list to create a new analysis or edit a saved one.</span>
+        <span class="app-hub-tile-cta">Open</span>
+      </a>
+      <a class="app-hub-tile" href="{{ url_for('reports') }}">
+        <span class="app-hub-tile-code" aria-hidden="true">
+          <span class="logo-accent">R</span><span class="logo-rest">D</span>
+        </span>
+        <span class="app-hub-tile-title">Reports &amp; Dashboards</span>
+        <span class="app-hub-tile-desc">Open saved analysis reports and dashboards.</span>
+        <span class="app-hub-tile-cta">Open</span>
       </a>
     </nav>
   </div>

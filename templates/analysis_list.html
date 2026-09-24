@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Analyses - Dynamic Portfolio Optimization{% endblock %}
+{% block shell %}page-shell--admin-wide{% endblock %}
 {% block content %}
 <div class="list-header">
   <h1>Analyses</h1>
@@ -8,6 +9,7 @@
 <p class="muted">Saved analyses in BMS_DPO. Open a row to edit the analysis or its settings.</p>
 
 {% if saved %}<div class="alert alert-success">Analysis was saved.</div>{% endif %}
+{% if deleted %}<div class="alert alert-success">Analysis was deleted.</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 
 <div class="analysis-list-toolbar">
@@ -25,7 +27,7 @@
         <th>RDM analysis</th>
         <th>Peril</th>
         <th>Created</th>
-        <th></th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -43,6 +45,9 @@
         <td class="list-actions">
           <a class="secondary-button" href="{{ url_for('edit_analysis', analysis_id=row.id) }}">Edit</a>
           <a class="secondary-button" href="{{ url_for('analysis_settings', analysis_id=row.id) }}">Settings</a>
+          <form method="post" action="{{ url_for('delete_analysis', analysis_id=row.id) }}" onsubmit="return confirm('Delete this analysis and its settings?');">
+            <button type="submit" class="secondary-button">Delete</button>
+          </form>
         </td>
       </tr>
       {% else %}
@@ -51,6 +56,9 @@
     </tbody>
   </table>
 </div>
+<a class="new-analysis-icon" href="{{ url_for('new_analysis') }}" title="New analysis" aria-label="New analysis">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+</a>
 {% endblock %}
 {% block scripts %}
 <script>

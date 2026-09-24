@@ -353,6 +353,31 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.usp_Analysis_Delete
+    @AnalysisID INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.tAnalysis WHERE AnalysisID = @AnalysisID)
+        THROW 50002, 'Analysis was not found.', 1;
+
+    -- EP points are created with each settings row and must be removed first.
+    -- Runs and PML results will be added here when those tables are in scope.
+    DELETE e
+    FROM dbo.tAnalysisEpPoint AS e
+    INNER JOIN dbo.tAnalysisSettings AS s
+        ON s.AnalysisSettingsID = e.AnalysisSettingsID
+    WHERE s.AnalysisID = @AnalysisID;
+
+    DELETE FROM dbo.tAnalysisSettings
+    WHERE AnalysisID = @AnalysisID;
+
+    DELETE FROM dbo.tAnalysis
+    WHERE AnalysisID = @AnalysisID;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.usp_AnalysisSettings_Create
     @AnalysisID            INT,
     @LossLevelName         VARCHAR(32),

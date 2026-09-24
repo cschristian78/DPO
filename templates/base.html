@@ -32,12 +32,25 @@
         </span>
         <span class="sidebar-nav-label">Home</span>
       </a>
-      <a class="sidebar-nav-item{% if request.endpoint == 'analysis_list' %} active{% endif %}" href="{{ url_for('analysis_list') }}" title="Analyses"{% if request.endpoint == 'analysis_list' %} aria-current="page"{% endif %}>
+      {% set analysis_section = request.endpoint in (
+        'analysis_list', 'delete_analysis', 'new_analysis', 'create_analysis',
+        'edit_analysis', 'update_analysis',
+        'analysis_settings', 'save_analysis_settings', 'update_analysis_settings'
+      ) %}
+      {% if analysis_section %}
+      <a class="sidebar-nav-item{% if request.endpoint == 'analysis_list' %} active{% endif %}" href="{{ url_for('analysis_list') }}" title="Analysis List"{% if request.endpoint == 'analysis_list' %} aria-current="page"{% endif %}>
         <span class="sidebar-nav-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
         </span>
-        <span class="sidebar-nav-label">Analyses</span>
+        <span class="sidebar-nav-label">Analysis List</span>
       </a>
+      <a class="sidebar-nav-item{% if request.endpoint in ('new_analysis', 'create_analysis') %} active{% endif %}" href="{{ url_for('new_analysis') }}" title="New Analysis"{% if request.endpoint in ('new_analysis', 'create_analysis') %} aria-current="page"{% endif %}>
+        <span class="sidebar-nav-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/></svg>
+        </span>
+        <span class="sidebar-nav-label">New Analysis</span>
+      </a>
+      {% endif %}
       <a class="sidebar-nav-item{% if request.endpoint == 'admin_page' %} active{% endif %}" href="{{ url_for('admin_page') }}" title="Admin"{% if request.endpoint == 'admin_page' %} aria-current="page"{% endif %}>
         <span class="sidebar-nav-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>

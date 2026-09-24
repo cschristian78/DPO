@@ -14,8 +14,7 @@
   }
 
   var summaryStatus = document.getElementById('port-summary-status');
-  var summaryTable = document.getElementById('port-summary-table');
-  var summaryBody = summaryTable ? summaryTable.querySelector('tbody') : null;
+  var summaryLine = document.getElementById('port-summary-line');
   var summaryToken = 0;
   var perspOrder = ['GU', 'GR', 'RL', 'RP', 'RC', 'CL'];
   var perspLabel = {
@@ -28,8 +27,10 @@
     if (!summaryStatus) return;
     summaryStatus.hidden = false;
     summaryStatus.textContent = message;
-    summaryTable.hidden = true;
-    summaryBody.replaceChildren();
+    if (summaryLine) {
+      summaryLine.hidden = true;
+      summaryLine.replaceChildren();
+    }
   }
 
   function money(n) {
@@ -42,7 +43,7 @@
     var token = summaryToken += 1;
     summaryStatus.hidden = false;
     summaryStatus.textContent = 'Loading portfolio summary';
-    summaryTable.hidden = true;
+    summaryLine.hidden = true;
     fetch('/api/rdm-portstats?database=' + encodeURIComponent(db) + '&analysis=' + encodeURIComponent(analysisId))
       .then(readJson)
       .then(function (res) {
@@ -61,27 +62,30 @@
           if (ia !== ib) return ia - ib;
           return String(a.perspective).localeCompare(String(b.perspective));
         });
-        summaryBody.replaceChildren();
+        summaryLine.replaceChildren();
         stats.forEach(function (row) {
-          var tr = document.createElement('tr');
-          var name = document.createElement('td');
+          var item = document.createElement('span');
+          item.className = 'summary-item';
+          var name = document.createElement('span');
+          name.className = 'summary-persp';
           var label = perspLabel[row.perspective];
           name.textContent = label ? row.perspective + ' ' + label : row.perspective;
-          var aal = document.createElement('td');
+          var aal = document.createElement('span');
           aal.textContent = money(row.aal);
-          var std = document.createElement('td');
+          var std = document.createElement('span');
+          std.className = 'summary-std';
           std.textContent = money(row.stdDev);
-          tr.append(name, aal, std);
-          summaryBody.appendChild(tr);
+          item.append(name, aal, std);
+          summaryLine.appendChild(item);
         });
         summaryStatus.hidden = true;
-        summaryTable.hidden = false;
+        summaryLine.hidden = false;
       })
       .catch(function (err) {
         if (token !== summaryToken) return;
         summaryStatus.hidden = false;
         summaryStatus.textContent = err.message;
-        summaryTable.hidden = true;
+        summaryLine.hidden = true;
       });
   }
 
