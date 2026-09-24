@@ -1,0 +1,62 @@
+# Copy this file to config.yaml and fill in YOUR values.
+# config.yaml is the only file you need to edit to deploy.
+
+connection:
+  # SQL Server host as reachable from the machine running this app.
+  # Because the app is deployed inside your network, this is usually just
+  # the plain server name / IP - no firewall changes needed.
+  server: "YOUR_SQL_SERVER"
+  database: "YOUR_RDM_DATABASE"
+  # ODBC driver name as installed on the app server. Common values:
+  #   "ODBC Driver 18 for SQL Server"   (current)
+  #   "ODBC Driver 17 for SQL Server"   (older installs)
+  odbc_driver: "ODBC Driver 18 for SQL Server"
+  # true  -> Windows authentication (recommended when the app runs as a
+  #          domain account with DB access)
+  # false -> SQL Server login; username pre-filled below, password is
+  #          ALWAYS typed in the web UI and never stored in this file.
+  use_windows_auth: true
+  username: ""
+  # Port the web UI listens on.
+  flask_port: 5000
+
+schema:
+  # Table listing analyses. One row per analysis.
+  analyses_table: "RDM_analysis"
+  analyses_id_column: "analysis_id"      # <-- verify against your DB
+  analyses_name_column: "analysis_name"  # <-- verify against your DB
+  # Optional extra columns from RDM_analysis to show in the summary list.
+  analyses_display_columns: []           # e.g. ["model_version", "created_date"]
+
+  # Where the EXCL / DIFF result tables are written, e.g. "dbo".
+  results_schema: "dbo"
+  results_table_prefix: "PML_"
+
+  granularities:
+    account:
+      loss_table: ""            # e.g. "dbo.RDM_ELT_Account"   <-- FILL IN
+      analysis_id_column: ""    # column holding the analysis key
+      event_id_column: ""       # column holding the event id
+      entity_id_column: ""      # the account number column
+      loss_columns:
+        "ground up": ""         # loss column for ground-up perspective
+        "gross": ""             # loss column for gross perspective
+        "net before tax": ""    # loss column for net-before-tax perspective
+    policy:
+      loss_table: ""
+      analysis_id_column: ""
+      event_id_column: ""
+      entity_id_column: ""      # the policy number column
+      loss_columns:
+        "ground up": ""
+        "gross": ""
+        "net before tax": ""
+    location:
+      loss_table: ""
+      analysis_id_column: ""
+      event_id_column: ""
+      entity_id_column: ""      # the location number column
+      loss_columns:
+        "ground up": ""
+        "gross": ""
+        "net before tax": ""

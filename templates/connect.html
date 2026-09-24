@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}New Analysis - Dynamic Portfolio Optimization{% endblock %}
+{% block content %}
+<h1>New Analysis</h1>
+<p class="muted">Create an analysis in BMS_DPO. The header is stored in tAnalysis. Loss level and perspective are stored in tAnalysisSettings, with the default EP points copied onto that settings row.</p>
+
+{% if created %}<div class="alert alert-success">Analysis {{ created }} was created.</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<form method="post" action="{{ url_for('create_analysis') }}" class="card form wide" id="new-analysis">
+  <div class="form-grid">
+    <label for="rdm-database">RDM database</label>
+    <span class="inline-field">
+      <select id="rdm-database" name="rdm_name" required>
+        <option value="">Loading RDM databases</option>
+      </select>
+      <button type="button" class="secondary-button" id="refresh-rdm">Refresh db list</button>
+    </span>
+
+    <label for="rdm-analysis">RDM analysis</label>
+    <select id="rdm-analysis" required>
+      <option value="">Select an RDM database</option>
+    </select>
+
+    <label for="edm-name">EDM name</label>
+    <input id="edm-name" name="edm_name" readonly>
+
+    <label for="portfolio-id">Portfolio ID</label>
+    <input id="portfolio-id" name="portfolio_id" readonly>
+
+    <label for="peril">Peril</label>
+    <input id="peril" name="peril" readonly>
+
+    <label for="analysis-name">Analysis name</label>
+    <input id="analysis-name" name="analysis_name" required>
+
+    <label for="analysis-description">Description</label>
+    <input id="analysis-description" name="analysis_description">
+
+    <label for="client">Client</label>
+    <select id="client" name="client_id" required>
+      <option value="">Select a client</option>
+      {% for c in clients %}
+      <option value="{{ c.id }}">{{ c.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="loss-level">Loss level</label>
+    <select id="loss-level" name="loss_level" required>
+      {% for level in loss_levels %}
+      <option value="{{ level }}">{{ level }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="loss-perspective">Loss perspective</label>
+    <select id="loss-perspective" name="loss_perspective" required>
+      {% for p in perspectives %}
+      <option value="{{ p }}">{{ p }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <input type="hidden" name="rdm_analysis_id" id="rdm-analysis-id">
+  <input type="hidden" name="rdm_analysis_name" id="rdm-analysis-name">
+  <p class="field-help">EDM name, portfolio, RDM analysis, and peril are copied from rdm_analysis. Client choices are active clients from BMS_CMS.</p>
+  <div class="button-row">
+    <button type="submit" class="primary-button" id="create-analysis">Create analysis</button>
+  </div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var refreshBtn = document.getElementById('refresh-rdm');
+  var database = document.getElementById('rdm-database');
+  var select = document.getElementById('rdm-analysis');
+  var rows = [];
+
+  function readJson(r) {
+    return r.json().then(function (j) { return { ok: r.ok, body: j }; });
+  }
+
+  function fill(row) {
+    document.getElementById('edm-name').value = row ? (row.edmName || '') : '';
+    document.getElementById('portfolio-id').value = row && row.portfolioId != null ? row.portfolioId : '';
+    document.getElementById('peril').value = row ? (row.peril || '') : '';
+    document.getElementById('rdm-analysis-id').value = row ? row.id : '';
+    document.getElementById('rdm-analysis-name').value = row ? (row.name || '') : '';
+    if (row && !document.getElementById('analysis-name').value) {
+      document.getElementById('analysis-name').value = row.name || '';
+    }
+  }
+
+  function loadAnalyses() {
+    var db = database.value;
+    select.innerHTML = '';
+    fill(null);
+    rows = [];
+    if (!db) {
+      select.add(new Option('Select an RDM database', ''));
+      return;
+    }
+    select.add(new Option('Loading analyses', ''));
+    matchClient(db);
+    fetch('/api/rdm-analyses?database=' + encodeURIComponent(db))
+      .then(readJson)
+      .then(function (res) {
+        select.innerHTML = '';
+        if (!res.ok) throw new Error(res.body.error || 'Could not load analyses');
+        rows = res.body.analyses || [];
+        select.add(new Option(rows.length ? 'Select an analysis' : 'No analyses found', ''));
+        rows.forEach(function (row, i) {
+          select.add(new Option(row.name || ('Analysis ' + row.id), String(i)));
+        });
+      })
+      .catch(function (err) {
+        select.innerHTML = '';
+        select.add(new Option(err.message, ''));
+      });
+  }
+
+  function matchClient(db) {
+    var client = document.getElementById('client');
+    fetch('/api/rdm-client?database=' + encodeURIComponent(db))
+      .then(readJson)
+      .then(function (res) {
+        if (!res.ok || !res.body.clientId) return;
+        var id = String(res.body.clientId);
+        var found = false;
+        for (var i = 0; i < client.options.length; i++) {
+          if (client.options[i].value === id) found = true;
+        }
+        if (!found) client.add(new Option(res.body.clientName, id));
+        client.value = id;
+      });
+  }
+
+  function loadDatabases() {
+    var current = database.value;
+    refreshBtn.disabled = true;
+    fetch('/api/rdm-databases')
+      .then(readJson)
+      .then(function (res) {
+        database.innerHTML = '';
+        if (!res.ok) throw new Error(res.body.error || 'Could not load RDM databases');
+        var names = res.body.databases || [];
+        database.add(new Option(names.length ? 'Select an RDM database' : 'No RDM databases found', ''));
+        names.forEach(function (name) {
+          database.add(new Option(name, name));
+        });
+        if (current && names.indexOf(current) >= 0) database.value = current;
+      })
+      .catch(function (err) {
+        database.innerHTML = '';
+        database.add(new Option(err.message, ''));
+      })
+      .then(function () { refreshBtn.disabled = false; });
+  }
+
+  refreshBtn.addEventListener('click', loadDatabases);
+  database.addEventListener('change', loadAnalyses);
+  select.addEventListener('change', function () {
+    var row = select.value === '' ? null : rows[Number(select.value)];
+    fill(row || null);
+  });
+  loadDatabases();
+})();
+</script>
+{% endblock %}

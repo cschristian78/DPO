@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Analyses - PML Optimizer{% endblock %}
+{% block content %}
+<h1>Analyses <span class="muted-sm">from {{ conn.database }} on {{ conn.server }}</span></h1>
+
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+{% if problems %}
+<div class="alert warn"><strong>Schema mapping gaps</strong>
+  <ul>{% for p in problems %}<li>{{ p }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if rows %}
+<table class="grid">
+  <thead><tr>
+    <th>Analysis</th>
+    {% for h in rows[0].extra_headers %}<th>{{ h }}</th>{% endfor %}
+    {% for g in granularities %}<th class="c">{{ g|capitalize }} granularity</th>{% endfor %}
+    <th></th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td><strong>{{ r.name }}</strong><br><span class="muted-sm">id: {{ r.id }}</span></td>
+    {% for x in r.extra %}<td>{{ x }}</td>{% endfor %}
+    {% for g in granularities %}
+      {% set p = r.probes[g] %}
+      <td class="c">
+        {% if p.available %}
+          <span class="ok">&#10003;</span>
+          <span class="muted-sm">{{ p.entities }} {{ g }}s / {{ p.events }} events</span>
+        {% else %}
+          <span class="no">&mdash;</span>
+          <span class="muted-sm">{{ p.note }}</span>
+        {% endif %}
+      </td>
+    {% endfor %}
+    <td><a class="btn" href="{{ url_for('setup', analysis_id=r.id, analysis_name=r.name) }}">Select</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="muted-sm">&#10003; = loss data exists at that granularity for the analysis. Only available granularities can be selected.</p>
+{% elif not error %}
+<p class="muted">No analyses found in the configured analyses table.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Results - PML Optimizer{% endblock %}
+{% block content %}
+<h1>Results</h1>
+<p class="muted">
+  Analysis <strong>{{ run.analysis_id }}</strong> &middot;
+  granularity <strong>{{ run.granularity }}</strong> &middot;
+  perspective <strong>{{ run.perspective }}</strong> &middot;
+  {{ run.n_entities }} entities / {{ run.n_events }} events &middot;
+  computed in {{ run.elapsed }}s
+</p>
+<p class="muted-sm">SQL tables written: <code>{{ run.excl_table }}</code>, <code>{{ run.diff_table }}</code></p>
+
+<div class="tabs">
+  <button class="tab active" data-tab="excl">EXCL - excluding curves</button>
+  <button class="tab" data-tab="diff">DIFF - impact / marginal score</button>
+  <button class="tab" data-tab="chart">EP curve</button>
+</div>
+
+<div class="tabpane active" id="pane-excl">
+  <div class="toolbar">
+    <a class="btn" href="{{ url_for('download', run_id=run_id, which='excl') }}">Download EXCL csv</a>
+  </div>
+  <div class="scrollx"><table class="grid nums">
+    <thead><tr><th>{{ run.granularity }} removed</th>{% for p in run.points %}<th>{{ p }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for idx, row in run.excl.iterrows() %}
+      <tr class="{% if idx == 'PORTFOLIO' %}portfolio{% endif %}">
+        <td><strong>{{ idx }}</strong></td>
+        {% for v in row %}<td>{{ "{:,.0f}".format(v) }}</td>{% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted-sm">First row = portfolio-level PML. Each row below = PML recalculated with that {{ run.granularity }} removed.</p>
+</div>
+
+<div class="tabpane" id="pane-diff">
+  <div class="toolbar">
+    <a class="btn" href="{{ url_for('download', run_id=run_id, which='diff') }}">Download DIFF csv</a>
+  </div>
+  <div class="scrollx"><table class="grid nums">
+    <thead><tr><th>{{ run.granularity }}</th>{% for p in run.points %}<th>{{ p }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for idx, row in run.diff.iterrows() %}
+      <tr><td><strong>{{ idx }}</strong></td>
+      {% for v in row %}<td>{{ "{:,.0f}".format(v) }}</td>{% endfor %}</tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted-sm">Each cell = original portfolio PML minus the PML excluding that {{ run.granularity }}: its marginal contribution to tail loss.</p>
+</div>
+
+<div class="tabpane" id="pane-chart">
+  <label>Overlay excluding curve for {{ run.granularity }}:
+    <select id="entitysel">
+      <option value="">(portfolio only)</option>
+      {% for e in run.diff.index %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
+    </select>
+  </label>
+  <canvas id="epchart" width="900" height="420"></canvas>
+  <p class="muted-sm">Log-scale return period (years) vs loss. Dots mark the interpolated PML points.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+window.__chart = {{ chart | tojson }};
+window.__runId = {{ run_id | tojson }};
+window.__points = {{ run.points | tojson }};
+window.__pml = {{ run.portfolio_pml.tolist() | tojson }};
+</script>
+{% endblock %}

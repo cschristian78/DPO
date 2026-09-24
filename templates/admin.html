@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Admin - Dynamic Portfolio Optimization{% endblock %}
+{% block shell %}page-shell--admin-wide{% endblock %}
+{% block content %}
+<section class="page-header">
+  <h1>Admin</h1>
+  <p>Configure SQL connectivity.</p>
+</section>
+
+{% if flash %}
+<div class="alert {{ 'alert-success' if flash_kind == 'success' else 'alert-error' }}">{{ flash }}</div>
+{% endif %}
+
+<section class="card admin-card">
+  <div class="admin-tabs" role="tablist" aria-label="Admin sections">
+    <button type="button" class="active">Server</button>
+  </div>
+  <div id="admin-tab-server" class="admin-tab-panel active">
+    <h2>Server</h2>
+    <div class="admin-subtabs" role="tablist" aria-label="Server connections">
+      <button type="button" class="active" data-subtab="dpo">DPO Server</button>
+      <button type="button" data-subtab="moodys">Moody's Server</button>
+    </div>
+
+    <div id="sub-dpo" class="admin-subpanel active">
+      <form class="admin-edit-card project-panel-tab-card" method="post" action="{{ url_for('admin_server_save') }}">
+        <div class="form-grid">
+          <label for="srv-server">Server</label>
+          <select id="srv-server" name="server">
+            {% for s in servers %}
+            <option value="{{ s }}" {% if s == settings.server %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+
+          <label for="srv-db">Database</label>
+          <input id="srv-db" name="database" value="{{ settings.database }}" placeholder="BMS_DPO" aria-describedby="srv-db-help">
+
+          <label for="srv-user">Username</label>
+          <input id="srv-user" name="username" autocomplete="off" value="{{ settings.username }}">
+
+          <label for="srv-pass">Password</label>
+          <input id="srv-pass" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for integrated security" value="">
+
+          <label for="srv-int">Security</label>
+          <span>
+            <input id="srv-int" name="use_integrated_security" type="checkbox" {% if settings.use_integrated_security %}checked{% endif %}>
+            Use Windows Integrated Security
+          </span>
+        </div>
+        <div class="button-row">
+          <button type="submit" class="primary-button">Test and Save</button>
+          <button type="submit" class="secondary-button" formaction="{{ url_for('admin_server_test') }}">Test Connection Only</button>
+        </div>
+        <p id="srv-db-help" class="field-help">
+          Server is chosen from the approved list above; database is user-defined and is sent exactly as typed
+          when you click <strong>Test and Save</strong> or <strong>Test Connection Only</strong>. Server,
+          database, username, and password are saved in an encrypted file under App_Data. The default
+          configuration uses Windows Integrated Security with no username or password, and database BMS_DPO.
+        </p>
+      </form>
+    </div>
+
+    <div id="sub-moodys" class="admin-subpanel">
+      <form class="admin-edit-card project-panel-tab-card" method="post" action="{{ url_for('admin_moodys_save') }}">
+        <div class="form-grid">
+          <label for="mdy-server">Server</label>
+          <input id="mdy-server" name="server" value="{{ moodys.server }}" placeholder="e.g. sql01.corp.local" required>
+
+          <label for="mdy-driver">ODBC driver</label>
+          <input id="mdy-driver" name="driver" value="{{ moodys.driver }}">
+
+          <label for="mdy-user">Username</label>
+          <input id="mdy-user" name="username" value="{{ moodys.username }}" autocomplete="username" required>
+
+          <label for="mdy-pass">Password</label>
+          <input id="mdy-pass" name="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved password">
+        </div>
+        <div class="button-row">
+          <button type="submit" class="primary-button">Test and Save</button>
+          <button type="submit" class="secondary-button" formaction="{{ url_for('admin_moodys_test') }}">Test Connection Only</button>
+        </div>
+        <p class="field-help">
+          SQL login used when a new analysis connects to Moody's. The RDM database is chosen on New Analysis.
+          Leave the password blank to keep the saved value.
+        </p>
+      </form>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var buttons = document.querySelectorAll('.admin-subtabs button');
+  function show(id) {
+    buttons.forEach(function (b) { b.classList.toggle('active', b.dataset.subtab === id); });
+    document.querySelectorAll('.admin-subpanel').forEach(function (p) {
+      p.classList.toggle('active', p.id === 'sub-' + id);
+    });
+  }
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.subtab); });
+  });
+  var initial = new URLSearchParams(window.location.search).get('panel');
+  if (initial === 'moodys' || initial === 'dpo') show(initial);
+})();
+</script>
+{% endblock %}

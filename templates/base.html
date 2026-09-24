@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Dynamic Portfolio Optimization{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="bg-layer" aria-hidden="true">
+  <div class="bg-glow"></div>
+  <div class="bg-grid"></div>
+  <div class="bg-scan"></div>
+</div>
+<div class="app-frame">
+  <aside class="app-sidebar" aria-label="Main navigation">
+    <div class="app-sidebar-brand">
+      <a class="app-sidebar-brand-link" href="{{ url_for('index') }}" title="Dynamic Portfolio Optimization">
+        <span class="app-sidebar-brand-mark" aria-hidden="true">
+          <span class="logo-accent">D</span><span class="logo-rest">PO</span>
+        </span>
+      </a>
+      <span class="app-sidebar-brand-sub">Portfolio</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="sidebar-nav-item{% if request.endpoint == 'index' %} active{% endif %}" href="{{ url_for('index') }}" title="Home"{% if request.endpoint == 'index' %} aria-current="page"{% endif %}>
+        <span class="sidebar-nav-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1v-9.5Z"/></svg>
+        </span>
+        <span class="sidebar-nav-label">Home</span>
+      </a>
+      <a class="sidebar-nav-item{% if request.endpoint == 'admin_page' %} active{% endif %}" href="{{ url_for('admin_page') }}" title="Admin"{% if request.endpoint == 'admin_page' %} aria-current="page"{% endif %}>
+        <span class="sidebar-nav-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </span>
+        <span class="sidebar-nav-label">Admin</span>
+      </a>
+      {% if connected %}
+      <a class="sidebar-nav-item" href="{{ url_for('disconnect') }}" title="Disconnect">
+        <span class="sidebar-nav-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        </span>
+        <span class="sidebar-nav-label">Disconnect</span>
+      </a>
+      {% endif %}
+    </nav>
+  </aside>
+  <div class="app-content">
+    <main class="page-shell {% block shell %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

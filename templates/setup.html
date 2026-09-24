@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Setup run - PML Optimizer{% endblock %}
+{% block content %}
+<h1>Setup run</h1>
+<p class="muted">Analysis: <strong>{{ analysis_name }}</strong> <span class="muted-sm">(id: {{ analysis_id }})</span></p>
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<form method="post" action="{{ url_for('run') }}" class="card form" id="runform">
+  <input type="hidden" name="analysis_id" value="{{ analysis_id }}">
+  <fieldset>
+    <legend>Granularity - entity to leave out, one at a time</legend>
+    {% for g in granularities %}
+      {% set p = probes[g] %}
+      <label class="radio {% if not p.available %}disabled{% endif %}">
+        <input type="radio" name="granularity" value="{{ g }}" {% if not p.available %}disabled{% endif %} {% if loop.first and p.available %}checked{% endif %}>
+        {{ g|capitalize }}
+        {% if p.available %}
+          <span class="muted-sm">{{ p.entities }} entities / {{ p.events }} events</span>
+        {% else %}
+          <span class="muted-sm">unavailable - {{ p.note }}</span>
+        {% endif %}
+      </label>
+    {% endfor %}
+  </fieldset>
+  <fieldset>
+    <legend>Loss perspective</legend>
+    {% for p in perspectives %}
+    <label class="radio">
+      <input type="radio" name="perspective" value="{{ p }}" {% if loop.first %}checked{% endif %}> {{ p }}
+    </label>
+    {% endfor %}
+  </fieldset>
+  <p class="muted-sm">The run recomputes the EP curve with each entity removed, interpolates PMLs at
+     5, 10, 25, 50, 75, 100, 130, 250, 500, 750, 1000, and writes EXCL + DIFF tables back to SQL Server.
+     Large portfolios can take several minutes.</p>
+  <button type="submit" class="btn primary" id="runbtn">Run leave-one-out analysis</button>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('runform').addEventListener('submit', function(){
+  var b = document.getElementById('runbtn');
+  b.disabled = true; b.textContent = 'Running - please wait...';
+});
+</script>
+{% endblock %}

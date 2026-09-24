@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Dynamic Portfolio Optimization{% endblock %}
+{% block shell %}page-shell--hub-wide{% endblock %}
+{% block content %}
+<div class="app-hub">
+  <header class="app-hub-brand">
+    <h1 class="app-hub-headline">
+      <div class="app-hub-earth-wrap">
+        <img src="{{ url_for('static', filename='images/earth-north-pole.png') }}" alt="" class="app-hub-earth" aria-hidden="true">
+        <div class="app-hub-brand-overlay">
+          <span class="app-hub-brand-mark" aria-label="Dynamic Portfolio Optimization">
+            <span class="logo-accent">Dynamic</span>
+            <span class="app-hub-brand-rest"> Portfolio Optimization</span>
+          </span>
+        </div>
+      </div>
+    </h1>
+  </header>
+  <div class="app-hub-apps">
+    <p class="app-hub-eyebrow">Select Application</p>
+    <nav class="app-hub-tiles" aria-label="Applications">
+      <a class="app-hub-tile" href="{{ url_for('new_analysis') }}">
+        <span class="app-hub-tile-code" aria-hidden="true">
+          <span class="logo-accent">N</span><span class="logo-rest">A</span>
+        </span>
+        <span class="app-hub-tile-title">New Analysis</span>
+        <span class="app-hub-tile-desc">Leave-one-out marginal PML analysis against an RDM database.</span>
+        <span class="app-hub-tile-cta">Start</span>
+      </a>
+    </nav>
+  </div>
+</div>
+{% endblock %}
