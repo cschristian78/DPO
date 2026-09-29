@@ -4,7 +4,7 @@
 <h1>Analysis Settings</h1>
 <p class="muted">{{ analysis.name }} · Analysis {{ analysis.id }}</p>
 
-{% if saved %}<div class="alert alert-success">Settings were saved.</div>{% endif %}
+{% if saved == 'ep' %}<div class="alert alert-success">EP points were saved for this analysis.</div>{% elif saved == 'portfolio' %}<div class="alert alert-success">The analysis run wrote the portfolio curve and the excluding-entity curves to the results table.</div>{% elif saved %}<div class="alert alert-success">Settings were saved.</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 
 <form method="post" action="{{ url_for('save_analysis_settings', analysis_id=analysis.id) }}" class="card form wide">
@@ -31,8 +31,30 @@
     <button type="submit" class="primary-button">Save settings</button>
     <a class="secondary-button" href="{{ url_for('edit_analysis', analysis_id=analysis.id) }}">Edit analysis</a>
     <a class="secondary-button" href="{{ url_for('analysis_list') }}">Back to list</a>
+    <button type="button" class="secondary-button button-row-end" id="edit-ep-points">Edit EP Points</button>
   </div>
 </form>
+
+<dialog id="ep-dialog" class="ep-dialog">
+  <form method="post" action="{{ url_for('save_analysis_ep_points', analysis_id=analysis.id) }}" id="ep-points">
+    <h2>EP points</h2>
+    <p class="muted" id="ep-status">{% if ep_custom %}Custom EP points for analysis {{ analysis.id }}.{% else %}Default EP points. Saving stores a custom set for analysis {{ analysis.id }}.{% endif %}</p>
+    {% if open_ep and error %}<div class="alert error">{{ error }}</div>{% endif %}
+    <label class="ep-reset" for="ep-reset">
+      <input type="checkbox" id="ep-reset">
+      Reset to default points
+    </label>
+    <p class="field-help">The application only supports up to 15 points. Unused rows are 0 and are not saved.</p>
+    <div id="ep-point-list"></div>
+    <div class="button-row">
+      <button type="button" class="secondary-button" id="ep-add">Add point</button>
+      <button type="submit" class="primary-button">Save EP points</button>
+      <button type="button" class="secondary-button" id="ep-close">Close</button>
+    </div>
+  </form>
+</dialog>
+<script type="application/json" id="ep-current">{{ ep_points | tojson }}</script>
+<script type="application/json" id="ep-defaults">{{ default_ep_points | tojson }}</script>
 
 <h2>Saved settings</h2>
 {% if settings %}
@@ -71,7 +93,116 @@
     {% endfor %}
   </tbody>
 </table>
+<form method="post" action="{{ url_for('write_portfolio_results', analysis_id=analysis.id) }}" class="button-row">
+  <button type="submit" class="primary-button">Run Analysis</button>
+</form>
+<p class="field-help">Runs after the settings are saved. It stores the portfolio EP points, AAL, and standard deviation, counts the unique loss-level ids, then subtracts each id's event losses from the portfolio event-loss table and rebuilds that excluding curve.</p>
 {% else %}
 <p class="muted">No settings saved yet.</p>
 {% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var dialog = document.getElementById('ep-dialog');
+  var list = document.getElementById('ep-point-list');
+  var add = document.getElementById('ep-add');
+  var reset = document.getElementById('ep-reset');
+  var status = document.getElementById('ep-status');
+  var current = JSON.parse(document.getElementById('ep-current').textContent);
+  var defaults = JSON.parse(document.getElementById('ep-defaults').textContent);
+  var customStatus = status.textContent;
+  var snapshot = current.slice();
+
+  function rowHtml(value) {
+    var shown = value === null || value === undefined ? '' : value;
+    return '<label class="ep-slot">EP_1</label><input name="return_period" type="number" min="0" step="1" value="' + shown + '" required><button type="button" class="secondary-button ep-remove">Remove</button>';
+  }
+
+  function renumber() {
+    Array.prototype.forEach.call(list.children, function (row, i) {
+      row.querySelector('.ep-slot').textContent = 'EP_' + (i + 1);
+    });
+  }
+
+  function bindRemove(row) {
+    row.querySelector('.ep-remove').addEventListener('click', function () {
+      if (reset.checked || list.children.length === 1) return;
+      row.remove();
+      while (list.children.length < 15) {
+        var blank = document.createElement('div');
+        blank.className = 'ep-point-row';
+        blank.innerHTML = rowHtml(0);
+        list.appendChild(blank);
+        bindRemove(blank);
+      }
+      renumber();
+      add.disabled = reset.checked || list.children.length >= 15;
+    });
+  }
+
+  function render(points) {
+    list.innerHTML = '';
+    var values = points.slice(0, 15);
+    while (values.length < 15) values.push(0);
+    values.forEach(function (point) {
+      var row = document.createElement('div');
+      row.className = 'ep-point-row';
+      row.innerHTML = rowHtml(point);
+      list.appendChild(row);
+      bindRemove(row);
+    });
+    var locked = reset.checked;
+    Array.prototype.forEach.call(list.querySelectorAll('input'), function (input) {
+      input.readOnly = locked;
+    });
+    add.disabled = locked || list.children.length >= 15;
+    renumber();
+  }
+
+  function valuesFromList() {
+    return Array.prototype.map.call(list.querySelectorAll('input'), function (input) {
+      return input.value;
+    });
+  }
+
+  document.getElementById('edit-ep-points').addEventListener('click', function () {
+    reset.checked = false;
+    snapshot = current.slice();
+    status.textContent = customStatus;
+    render(current);
+    dialog.showModal();
+  });
+
+  document.getElementById('ep-close').addEventListener('click', function () {
+    dialog.close();
+  });
+
+  reset.addEventListener('change', function () {
+    if (reset.checked) {
+      snapshot = valuesFromList();
+      status.textContent = 'Default EP points. Saving stores these points for this analysis.';
+      render(defaults);
+    } else {
+      status.textContent = customStatus;
+      render(snapshot);
+    }
+  });
+
+  add.addEventListener('click', function () {
+    if (reset.checked || list.children.length >= 15) return;
+    var row = document.createElement('div');
+    row.className = 'ep-point-row';
+    row.innerHTML = rowHtml('');
+    list.appendChild(row);
+    bindRemove(row);
+    renumber();
+    add.disabled = list.children.length >= 15;
+    row.querySelector('input').focus();
+  });
+
+  render(current);
+  if ({{ 'true' if open_ep else 'false' }}) dialog.showModal();
+})();
+</script>
 {% endblock %}

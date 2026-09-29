@@ -7,8 +7,11 @@ Run:  python tests/test_analysis.py
 import numpy as np
 import pandas as pd
 
-from rdm.analysis import (TARGET_POINTS, downsample_curve, ep_curve,
-                          leave_one_out_pml, pml_at_points)
+from rdm.analysis import (TARGET_POINTS, annual_metrics, downsample_curve,
+                          ep_curve, excluding_annual, leave_one_out_pml,
+                          occurrence_ep, pml_at_points, pml_from_elt,
+                          portfolio_pml_from_portep, subtract_elt)
+from rdm.math_special import log_gamma, regularized_incomplete_beta
 
 
 def make_matrix(n_events=3000, n_entities=12, seed=7):
@@ -26,6 +29,39 @@ def test_ep_curve_ranking():
     # N=3 -> T = (N+1)/rank_from_top = 4/3, 2, 4
     assert np.allclose(tps, [4.0 / 3.0, 2.0, 4.0])
     assert np.all(np.diff(tps) > 0), "return periods must ascend"
+
+
+def test_beta_matches_known_values():
+    assert abs(log_gamma(1.0)) < 1e-12
+    assert abs(log_gamma(5.0) - np.log(24.0)) < 1e-10
+    assert abs(regularized_incomplete_beta(1.0, 1.0, 0.5) - 0.5) < 1e-12
+    assert abs(regularized_incomplete_beta(2.0, 2.0, 0.5) - 0.5) < 1e-8
+
+
+def test_annual_metrics_from_event_rate():
+    aal, stddev = annual_metrics([100.0], [0.0], [0.1])
+    assert abs(aal - 10.0) < 1e-9
+    assert abs(stddev - np.sqrt(1000.0)) < 1e-9
+    excl_aal, excl_std = excluding_annual([100.0], [0.0], [0.2], [40.0])
+    assert abs(excl_aal - 12.0) < 1e-9
+    assert abs(excl_std - np.sqrt(720.0)) < 1e-9
+
+
+def test_subtracted_elt_curve():
+    remaining = subtract_elt([100.0, 40.0], [25.0, 40.0])
+    assert list(remaining) == [75.0, 0.0]
+    # One certain-enough event: mean 50, no uncertainty, rate 0.01.
+    # Occurrence EP below the mean is 1-exp(-0.01) ≈ 0.00995 (about 100.5 years).
+    ep = occurrence_ep([50.0], [0.0], [50.0], [0.01], 10.0)
+    assert abs(ep - (1.0 - np.exp(-0.01))) < 1e-12
+    losses = pml_from_elt([50.0], [0.0], [50.0], [0.01], [200])
+    assert abs(losses[0] - 50.0) < 1.0
+
+
+def test_portfolio_curve_uses_exceedance():
+    # EP 0.1 is a 10-year return period with loss 4e6.
+    out = portfolio_pml_from_portep([0.5, 0.1, -1], [1e6, 4e6, -1], [10])
+    assert out[0] == 4e6
 
 
 def test_pml_interpolation_monotonic():

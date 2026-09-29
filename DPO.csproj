@@ -9,4 +9,8 @@
     <AssemblyName>DPO</AssemblyName>
   </PropertyGroup>
 
+  <Target Name="StopLockedApp" BeforeTargets="Build">
+    <Exec Command="cmd /c &quot;taskkill /F /IM DPO.exe /T &gt;nul 2&gt;&amp;1 &amp; exit /b 0&quot;" />
+  </Target>
+
 </Project>

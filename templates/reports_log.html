@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Analysis time log - Dynamic Portfolio Optimization{% endblock %}
+{% block shell %}page-shell--admin-wide{% endblock %}
+{% block content %}
+<section class="page-header">
+  <h1>Analysis time log</h1>
+  <p>{% if analysis %}{{ analysis.name }}{% else %}Analysis {{ request.view_args.analysis_id }}{% endif %}</p>
+</section>
+
+<p><a href="{{ url_for('reports', analysis_id=analysis.id if analysis else none) }}">Back to dashboard</a></p>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <table class="grid nums">
+    <thead>
+      <tr>
+        <th>Logged</th>
+        <th>Run</th>
+        <th class="c">Elapsed seconds</th>
+        <th class="c">Locations</th>
+        <th>Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in user_log %}
+      <tr>
+        <td>{{ entry.logged_at }}</td>
+        <td>{{ entry.run_id }}</td>
+        <td>{{ '%.1f'|format(entry.elapsed) if entry.elapsed is not none else '' }}</td>
+        <td>{{ entry.completed }} / {{ entry.total }}</td>
+        <td>{{ entry.message }}</td>
+      </tr>
+      {% else %}
+      <tr class="empty-row"><td colspan="5">No timing rows for this analysis.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

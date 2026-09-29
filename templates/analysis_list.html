@@ -45,6 +45,9 @@
         <td class="list-actions">
           <a class="secondary-button" href="{{ url_for('edit_analysis', analysis_id=row.id) }}">Edit</a>
           <a class="secondary-button" href="{{ url_for('analysis_settings', analysis_id=row.id) }}">Settings</a>
+          {% if row.has_results %}
+          <a class="secondary-button" href="{{ url_for('reports', analysis_id=row.id) }}">View results</a>
+          {% endif %}
           <form method="post" action="{{ url_for('delete_analysis', analysis_id=row.id) }}" onsubmit="return confirm('Delete this analysis and its settings?');">
             <button type="submit" class="secondary-button">Delete</button>
           </form>

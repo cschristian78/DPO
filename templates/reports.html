@@ -1,6 +1,576 @@
 {% extends "base.html" %}
 {% block title %}Reports & Dashboards - Dynamic Portfolio Optimization{% endblock %}
+{% block shell %}page-shell--admin-wide{% endblock %}
 {% block content %}
-<h1>Reports &amp; Dashboards</h1>
-<p class="muted">Reports and dashboards for saved analyses will appear here.</p>
+<section class="page-header">
+  <h1>Reports &amp; Dashboards</h1>
+  <p>Marginal impact of each loss-level id for the analysis you select.</p>
+</section>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form class="card dashboard-filters" method="get" action="{{ url_for('reports') }}">
+  <label for="analysis_id">Analysis</label>
+  <select id="analysis_id" name="analysis_id" onchange="this.form.submit()">
+    <option value="">Select an analysis</option>
+    {% for choice in choices %}
+    <option value="{{ choice.id }}"{% if choice.id == selected %} selected{% endif %}>{{ choice.name }}</option>
+    {% endfor %}
+  </select>
+</form>
+
+{% if selected and not dashboard and not error %}
+<p class="muted">This analysis does not have a completed run yet. Run it from analysis settings, then come back here.</p>
+{% endif %}
+
+{% if selected %}
+<p class="dashboard-log-link"><a href="{{ url_for('analysis_time_log', analysis_id=selected) }}">Analysis time log</a></p>
+{% endif %}
+
+{% if dashboard %}
+<section class="dashboard-metrics">
+  <article>
+    <span>Loss level</span>
+    <strong>{{ dashboard.loss_level }}</strong>
+  </article>
+  <article>
+    <span>Perspective</span>
+    <strong>{{ dashboard.perspective }}</strong>
+  </article>
+  <article>
+    <span>Ids in the run</span>
+    <strong>{{ dashboard.entity_count if dashboard.entity_count is not none else dashboard.rows|length }}</strong>
+  </article>
+  <article>
+    <span>Portfolio at {{ dashboard.return_period }}</span>
+    <strong>{{ money(dashboard.portfolio) }}</strong>
+  </article>
+  <article>
+    <span>Portfolio AAL</span>
+    <strong>{{ money(dashboard.aal) }}</strong>
+  </article>
+</section>
+
+<div class="result-tabs" role="tablist" aria-label="Dashboard views">
+  <button type="button" class="{% if view == 'impact' %}active{% endif %}" data-view="impact">PML Impact</button>
+  <button type="button" class="{% if view == 'map' %}active{% endif %}" data-view="map">Map View</button>
+  <button type="button" class="{% if view == 'results' %}active{% endif %}" data-view="results">Raw Results</button>
+</div>
+
+<div data-view-panel="results" {% if view != 'results' %}hidden{% endif %}>
+{% if dashboard.result_rows %}
+<section class="card" id="result-tables">
+  <h2>EXCL, DIFF, and Exposure</h2>
+  <p class="muted">EP_1 through EP_15 are the return-period columns. EXCL also has the AAL and standard deviation of the portfolio with that risk removed. DIFF has the AAL and standard deviation of the risk. Exposure lists the location attributes gathered from the EDM.</p>
+  <div class="result-tabs" role="tablist" aria-label="Result tables">
+    <button type="button" class="active" data-result="EXCL">EXCL</button>
+    <button type="button" data-result="DIFF">DIFF</button>
+    <button type="button" data-result="EXPOSURE">Exposure</button>
+  </div>
+  <div class="result-scroll">
+    <table class="grid nums result-grid" id="result-table-excl" data-result="EXCL">
+      <thead>
+        <tr>
+          <th>{{ dashboard.loss_level }} id</th>
+          <th>AAL</th>
+          <th>Std dev</th>
+          {% for header in dashboard.headers %}
+          <th class="c">EP_{{ header.slot }}{% if header.period %}<span>{{ header.period }}</span>{% endif %}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in dashboard.result_rows if row.result_type == 'EXCL' %}
+        <tr>
+          <td>{{ row.entity_id }}</td>
+          <td>{{ row.aal }}</td>
+          <td>{{ row.standard_deviation }}</td>
+          {% for value in row.amounts %}
+          <td>{{ value }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="grid nums result-grid" id="result-table-diff" data-result="DIFF" hidden>
+      <thead>
+        <tr>
+          <th>{{ dashboard.loss_level }} id</th>
+          <th>AAL</th>
+          <th>Std dev</th>
+          {% for header in dashboard.headers %}
+          <th class="c">EP_{{ header.slot }}{% if header.period %}<span>{{ header.period }}</span>{% endif %}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in dashboard.result_rows if row.result_type == 'DIFF' %}
+        <tr>
+          <td>{{ row.entity_id }}</td>
+          <td>{{ row.aal }}</td>
+          <td>{{ row.standard_deviation }}</td>
+          {% for value in row.amounts %}
+          <td>{{ value }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="grid nums result-grid" id="result-table-exposure" data-result="EXPOSURE" hidden>
+      <thead>
+        <tr>
+          <th>{{ dashboard.loss_level }} id</th>
+          <th>Construction</th>
+          <th>Occupancy</th>
+          <th>Stories</th>
+          <th>Year built</th>
+          <th>Floor area</th>
+          <th>DTC</th>
+          <th>Elevation</th>
+          <th>Incept</th>
+          <th>Expire</th>
+          <th>Street address</th>
+          <th>Admin1</th>
+          <th>Admin2</th>
+          <th>Postal code</th>
+          <th>Latitude</th>
+          <th>Longitude</th>
+          <th>Location value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entity_id, exposure in dashboard.exposure.items()|sort %}
+        <tr>
+          <td>{{ entity_id }}</td>
+          <td>{{ exposure.construction }}</td>
+          <td>{{ exposure.occupancy }}</td>
+          <td>{{ exposure.stories }}</td>
+          <td>{{ exposure.year_built }}</td>
+          <td>{{ exposure.floor_area }}</td>
+          <td>{{ exposure.dtc }}</td>
+          <td>{{ exposure.elevation }}</td>
+          <td>{{ exposure.incept_date }}</td>
+          <td>{{ exposure.expire_date }}</td>
+          <td>{{ exposure.street_address }}</td>
+          <td>{{ exposure.admin1 }}</td>
+          <td>{{ exposure.admin2 }}</td>
+          <td>{{ exposure.postal_code }}</td>
+          <td>{{ exposure.latitude }}</td>
+          <td>{{ exposure.longitude }}</td>
+          <td>{{ exposure.location_value }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Biggest impact at {{ dashboard.return_period }} years</h2>
+  <form class="chart-filters" method="get" action="{{ url_for('reports') }}">
+    <input type="hidden" name="analysis_id" value="{{ selected }}">
+    <input type="hidden" name="view" value="results">
+    <label for="return_period">Return period</label>
+    <select id="return_period" name="return_period">
+      {% for period in dashboard.periods %}
+      <option value="{{ period }}"{% if period == dashboard.return_period %} selected{% endif %}>{{ period }}</option>
+      {% endfor %}
+    </select>
+    <label for="chart_limit">IDs to show</label>
+    <select id="chart_limit" name="chart_limit">
+      {% for count in chart_limits %}
+      <option value="{{ count }}"{% if count == dashboard.chart_limit %} selected{% endif %}>{{ count }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="primary-button">Refresh</button>
+  </form>
+  <p class="muted">Each bar is the marginal loss from removing that {{ dashboard.loss_level|lower }} (portfolio loss minus the excluding loss).</p>
+  {% if dashboard.rows %}
+  <div class="impact-scroll">
+  <ol class="impact-chart">
+    {% for row in dashboard.rows %}
+    <li>
+      <span class="impact-rank">{{ loop.index }}</span>
+      <span class="impact-id">{{ row.entity_id }}</span>
+      <span class="impact-track" aria-hidden="true">
+        <span class="impact-bar" style="width: {{ '%.1f'|format(row.width) }}%"></span>
+      </span>
+      <span class="impact-value">{{ money(row.diff) }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  </div>
+  {% else %}
+  <p class="muted">The latest run has a portfolio row and no loss-level ids yet.</p>
+  {% endif %}
+</section>
+</div>
+
+<div data-view-panel="impact" {% if view != 'impact' %}hidden{% endif %}>
+<section class="card">
+  <h2>PML Impact</h2>
+  <p class="muted">Each option removes the largest marginal locations until the PML drop or the premium limit is reached. Rename a tab by editing its label.</p>
+  <form id="scenario-form" method="get" action="{{ url_for('reports') }}">
+    <input type="hidden" name="analysis_id" value="{{ selected }}">
+    <input type="hidden" name="view" value="impact">
+    <div class="sheet-tabs" id="option-tabs" role="tablist">
+      {% for impact in impacts %}
+      <div class="sheet-tab{% if loop.first %} active{% endif %}" data-option="{{ loop.index0 }}">
+        <input class="sheet-name" name="scenario_name" value="{{ impact.name }}" aria-label="Option name">
+        <button type="button" class="sheet-remove" aria-label="Remove option">&times;</button>
+      </div>
+      {% endfor %}
+      <button type="button" class="sheet-tab sheet-add" id="add-option">Add Option</button>
+    </div>
+  {% for impact in impacts %}
+  <div class="option-panel" data-option-panel="{{ loop.index0 }}"{% if not loop.first %} hidden{% endif %}>
+  <fieldset class="option-settings">
+    <legend>Option Settings</legend>
+    <div class="scenario-row">
+      <label>Return period
+        <select name="scenario_period">
+          {% for period in dashboard.periods %}
+          <option value="{{ period }}"{% if period == impact.return_period %} selected{% endif %}>1/{{ period }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>PML to drop
+        <input name="scenario_pml" type="number" min="0" step="1" value="{{ impact.pml_input }}">
+      </label>
+      <label>Premium to lose
+        <input name="scenario_premium" type="number" min="0" step="1" value="{{ impact.premium_input }}">
+      </label>
+    </div>
+  </fieldset>
+  <h3>Scenario summary</h3>
+  <section class="dashboard-metrics">
+    <article>
+      <span>Locations impacted</span>
+      <strong>{{ impact.count }}</strong>
+    </article>
+    <article>
+      <span>TIV impacted</span>
+      <strong>{{ money(impact.tiv) }}</strong>
+    </article>
+    <article>
+      <span>PML impacted</span>
+      <strong>{{ money(impact.cumulative) }}</strong>
+    </article>
+    <article>
+      <span>Premium impacted</span>
+      <strong>{{ money(impact.premium) }}</strong>
+    </article>
+    <article>
+      <span>Original 1/{{ impact.return_period }} PML</span>
+      <strong>{{ money(impact.original_pml) }}</strong>
+    </article>
+    <article>
+      <span>New 1/{{ impact.return_period }} PML</span>
+      <strong>{{ money(impact.new_pml) }}</strong>
+    </article>
+  </section>
+
+  <h3>Where they are</h3>
+  <div class="impact-maps">
+    <div>
+      <p class="muted">State</p>
+      {% if impact.states %}
+      {% set state_peak = impact.states | map(attribute=1) | max %}
+      <div class="column-chart" style="--cols: {{ impact.states|length }}">
+        <div class="column-yaxis" aria-hidden="true">
+          <span>{{ state_peak }}</span>
+          <span>{% if state_peak > 1 %}{{ (state_peak / 2) | round(0, 'floor') | int }}{% endif %}</span>
+          <span>0</span>
+        </div>
+        <ol class="impact-chart share-chart" aria-label="Locations by state">
+          {% for name, count in impact.states %}
+          <li aria-label="{{ name }}: {{ count }}">
+            <span class="impact-value">{{ count }}</span>
+            <span class="impact-track" title="{{ name }}: {{ count }}">
+              <span class="impact-bar" style="height: {{ '%.1f'|format(count / state_peak * 100) }}%"></span>
+            </span>
+            <span class="impact-id">{{ name }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% endif %}
+    </div>
+    <div>
+      <p class="muted">County</p>
+      {% if impact.counties %}
+      {% set county_peak = impact.counties | map(attribute=1) | max %}
+      <div class="column-chart names" style="--cols: {{ impact.counties|length }}">
+        <div class="column-yaxis" aria-hidden="true">
+          <span>{{ county_peak }}</span>
+          <span>{% if county_peak > 1 %}{{ (county_peak / 2) | round(0, 'floor') | int }}{% endif %}</span>
+          <span>0</span>
+        </div>
+        <ol class="impact-chart share-chart" aria-label="Locations by county">
+          {% for name, count in impact.counties %}
+          <li aria-label="{{ name }}: {{ count }}">
+            <span class="impact-value">{{ count }}</span>
+            <span class="impact-track" title="{{ name }}: {{ count }}">
+              <span class="impact-bar" style="height: {{ '%.1f'|format(count / county_peak * 100) }}%"></span>
+            </span>
+            <span class="impact-id" title="{{ name }}">{{ name }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="geo-map" aria-label="Location map" data-boundaries-url="{{ url_for('static', filename='geo/counties-10m.json') }}"></div>
+  <script type="application/json" class="location-points">{{ impact.points | tojson }}</script>
+  <p class="location-map-status muted"></p>
+
+  <h3>Expiration</h3>
+  {% set expire_peak = impact.timeline | map(attribute='expire') | max %}
+  <div class="expire-chart">
+    <div class="expire-yaxis" aria-hidden="true">
+      <span>{{ expire_peak }}</span>
+      <span>{% if expire_peak > 1 %}{{ (expire_peak / 2) | round(0, 'floor') | int }}{% endif %}</span>
+      <span>0</span>
+    </div>
+    <ol class="impact-chart timeline" aria-label="Locations expiring by month">
+      {% for row in impact.timeline %}
+      <li aria-label="{{ row.month }}: {{ row.expire }}">
+        <span class="impact-value">{% if row.expire %}{{ row.expire }}{% endif %}</span>
+        <span class="impact-track" title="{{ row.month }}: {{ row.expire }}">
+          <span class="impact-bar" style="height: {{ '%.1f'|format(row.expire_width) }}%"></span>
+        </span>
+        <span class="impact-id">{{ row.month }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+  <p class="muted">Count of locations in this option that expire in each calendar month.</p>
+
+  <h3>Exposure mix</h3>
+  <div class="pie-row">
+    {% for title, slices in impact.pies.items() %}
+    <article>
+      <h4>{{ title }}</h4>
+      <div class="pie" style="background: conic-gradient({% for slice in slices %}{{ slice.color }} {{ '%.2f'|format(slice.start) }}% {{ '%.2f'|format(slice.end) }}%{% if not loop.last %}, {% endif %}{% endfor %})"></div>
+      <ul>
+        {% for slice in slices %}
+        <li><span style="background: {{ slice.color }}"></span>{{ slice.label }} · {{ slice.count }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+    {% endfor %}
+  </div>
+
+  <h3>Secondary modifiers</h3>
+  <div class="impact-maps">
+    {% for title, pairs in impact.modifiers.items() %}
+    <div>
+      <p class="muted">{{ title }}</p>
+      {% if pairs %}
+      {% set modifier_peak = pairs | map(attribute=1) | max %}
+      <div class="column-chart names" style="--cols: {{ pairs|length }}">
+        <div class="column-yaxis" aria-hidden="true">
+          <span>{{ modifier_peak }}</span>
+          <span>{% if modifier_peak > 1 %}{{ (modifier_peak / 2) | round(0, 'floor') | int }}{% endif %}</span>
+          <span>0</span>
+        </div>
+        <ol class="impact-chart share-chart" aria-label="{{ title }} ranges">
+          {% for name, count in pairs %}
+          <li aria-label="{{ name }}: {{ count }}">
+            <span class="impact-value">{{ count }}</span>
+            <span class="impact-track" title="{{ name }}: {{ count }}">
+              <span class="impact-bar" style="height: {{ '%.1f'|format(count / modifier_peak * 100 if modifier_peak else 0) }}%"></span>
+            </span>
+            <span class="impact-id" title="{{ name }}">{{ name }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <h3>Locations in the set</h3>
+  <div class="result-scroll">
+    <table class="grid nums">
+      <thead>
+        <tr>
+          <th>Location</th><th>State</th><th>County</th><th>DTC</th><th>Elevation</th><th>Incept</th><th>Expire</th><th>Marginal</th><th>Cumulative</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in impact.locations %}
+        <tr>
+          <td>{{ row.entity_id }}</td>
+          <td>{{ row.state }}</td>
+          <td>{{ row.county }}</td>
+          <td>{{ row.dtc }}</td>
+          <td>{{ row.elevation_band }}</td>
+          <td>{{ row.incept.strftime('%Y-%m-%d') if row.incept else '' }}</td>
+          <td>{{ row.expire.strftime('%Y-%m-%d') if row.expire else '' }}</td>
+          <td>{{ money(row.diff) }}</td>
+          <td>{{ money(row.cumulative) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  </div>
+  {% else %}
+  <p class="muted">This run has no location DIFF rows at the selected return period.</p>
+  {% endfor %}
+  <div class="button-row">
+    <button type="submit" class="primary-button" name="analyze" value="1">Analyze</button>
+  </div>
+  </form>
+</section>
+</div>
+
+<div data-view-panel="map" {% if view != 'map' %}hidden{% endif %}>
+<section class="card">
+  <h2>Map View</h2>
+  <p class="muted">Every location is plotted. Five bands split the lowest and highest marginal DIFF at the return period. Edit a band or its color, then apply.</p>
+  {% if map_view and map_view.locations %}
+  <div class="map-view-layout">
+    <fieldset class="option-settings map-bands">
+      <legend>DIFF ranges</legend>
+      <label for="band-period">Return period
+        <select id="band-period">
+          {% for period in dashboard.periods %}
+          <option value="{{ period }}"{% if period == dashboard.return_period %} selected{% endif %}>1/{{ period }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="map-band-head" aria-hidden="true"><span></span><span>From</span><span>To</span><span></span></div>
+      <div id="band-rows"></div>
+      <button type="button" class="primary-button" id="band-apply">Apply ranges</button>
+    </fieldset>
+    <div>
+      <div class="band-map" id="band-map" aria-label="All locations by DIFF range" data-boundaries-url="{{ url_for('static', filename='geo/counties-10m.json') }}"></div>
+      <p class="location-map-status muted" id="band-map-status"></p>
+    </div>
+  </div>
+  <script type="application/json" id="band-map-data">{{ map_view | tojson }}</script>
+  {% else %}
+  <p class="muted">This run has no located exposures to plot.</p>
+  {% endif %}
+</section>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">
+<script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/topojson-client.min.js') }}"></script>
+<script src="{{ url_for('static', filename='location-map.js') }}"></script>
+<script src="{{ url_for('static', filename='band-map.js') }}"></script>
+<script>
+(function () {
+  var tables = document.querySelectorAll('.result-scroll table[data-result]');
+  if (!tables.length) return;
+  var buttons = document.querySelectorAll('button[data-result]');
+  function apply(kind) {
+    buttons.forEach(function (button) {
+      button.classList.toggle('active', button.dataset.result === kind);
+    });
+    tables.forEach(function (table) {
+      table.hidden = table.dataset.result !== kind;
+    });
+  }
+  buttons.forEach(function (button) {
+    button.addEventListener('click', function () { apply(button.dataset.result); });
+  });
+  apply('EXCL');
+})();
+(function () {
+  var tabs = document.getElementById('option-tabs');
+  var add = document.getElementById('add-option');
+  if (!tabs || !add) return;
+  function panels() { return document.querySelectorAll('.option-panel'); }
+  function sheetTabs() { return tabs.querySelectorAll('.sheet-tab[data-option]'); }
+  function show(index) {
+    sheetTabs().forEach(function (tab) {
+      tab.classList.toggle('active', tab.dataset.option === String(index));
+    });
+    panels().forEach(function (panel) {
+      var on = panel.dataset.optionPanel === String(index);
+      panel.hidden = !on;
+      if (on) {
+        var mapEl = panel.querySelector('.geo-map');
+        if (mapEl && mapEl._locationMap) {
+          mapEl._locationMap.invalidateSize();
+          if (mapEl._fitTarget) mapEl._locationMap.fitBounds(mapEl._fitTarget, { padding: [28, 28] });
+        }
+      }
+    });
+  }
+  tabs.addEventListener('click', function (event) {
+    var tab = event.target.closest('.sheet-tab[data-option]');
+    if (!tab || event.target.classList.contains('sheet-remove')) return;
+    show(tab.dataset.option);
+  });
+  add.addEventListener('click', function () {
+    var current = panels();
+    if (!current.length) return;
+    var index = current.length;
+    var copy = current[0].cloneNode(true);
+    copy.dataset.optionPanel = String(index);
+    copy.hidden = false;
+    copy.querySelectorAll('.option-exhibits, .geo-map, .location-points, .location-map-status, .dashboard-metrics, h3, .impact-maps, .expire-chart, .timeline, .pie-row, .result-scroll, .muted').forEach(function (node) {
+      if (node.closest('.scenario-row')) return;
+      node.remove();
+    });
+    var note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'Set the return period and a PML drop or premium limit, then choose Analyze.';
+    copy.appendChild(note);
+    copy.querySelectorAll('input').forEach(function (input) { input.value = ''; });
+    current[current.length - 1].after(copy);
+    var tab = document.createElement('div');
+    tab.className = 'sheet-tab';
+    tab.dataset.option = String(index);
+    tab.innerHTML = '<input class="sheet-name" name="scenario_name" value="Option ' + (index + 1) + '" aria-label="Option name"><button type="button" class="sheet-remove" aria-label="Remove option">&times;</button>';
+    add.before(tab);
+    show(index);
+  });
+  tabs.addEventListener('click', function (event) {
+    if (!event.target.classList.contains('sheet-remove')) return;
+    if (sheetTabs().length < 2) return;
+    var tab = event.target.closest('.sheet-tab');
+    var index = tab.dataset.option;
+    var panel = document.querySelector('.option-panel[data-option-panel="' + index + '"]');
+    if (panel) panel.remove();
+    tab.remove();
+    sheetTabs().forEach(function (item, position) { item.dataset.option = String(position); });
+    panels().forEach(function (item, position) { item.dataset.optionPanel = String(position); });
+    show(0);
+  });
+})();
+(function () {
+  var buttons = document.querySelectorAll('[data-view]');
+  var panels = document.querySelectorAll('[data-view-panel]');
+  if (!buttons.length) return;
+  function show(view) {
+    buttons.forEach(function (button) {
+      button.classList.toggle('active', button.dataset.view === view);
+    });
+    panels.forEach(function (panel) {
+      var on = panel.dataset.viewPanel === view;
+      panel.hidden = !on;
+      if (!on) return;
+      var band = panel.querySelector(".band-map");
+      if (band && band._locationMap) {
+        band._locationMap.invalidateSize();
+        if (band._fitTarget) band._locationMap.fitBounds(band._fitTarget, { padding: [28, 28] });
+      }
+    });
+  }
+  buttons.forEach(function (button) {
+    button.addEventListener('click', function () { show(button.dataset.view); });
+  });
+})();
+</script>
 {% endblock %}

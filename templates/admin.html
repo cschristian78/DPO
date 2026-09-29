@@ -4,7 +4,7 @@
 {% block content %}
 <section class="page-header">
   <h1>Admin</h1>
-  <p>Configure SQL connectivity.</p>
+  <p>Configure SQL connectivity, the modeling curve, and exposure ranges.</p>
 </section>
 
 {% if flash %}
@@ -13,54 +13,45 @@
 
 <section class="card admin-card">
   <div class="admin-tabs" role="tablist" aria-label="Admin sections">
-    <button type="button" class="active">Server</button>
+    <button type="button" class="active" data-tab="server">Server</button>
+    <button type="button" data-tab="curve">EP</button>
+    <button type="button" data-tab="ep">EP points</button>
+    <button type="button" data-tab="range">Set Range</button>
   </div>
   <div id="admin-tab-server" class="admin-tab-panel active">
     <h2>Server</h2>
-    <div class="admin-subtabs" role="tablist" aria-label="Server connections">
+    <div class="admin-subtabs" data-group="server" role="tablist" aria-label="Server connections">
       <button type="button" class="active" data-subtab="dpo">DPO Server</button>
       <button type="button" data-subtab="moodys">Moody's Server</button>
     </div>
 
-    <div id="sub-dpo" class="admin-subpanel active">
+    <div id="sub-dpo" class="admin-subpanel active" data-group="server">
       <form class="admin-edit-card project-panel-tab-card" method="post" action="{{ url_for('admin_server_save') }}">
         <div class="form-grid">
           <label for="srv-server">Server</label>
-          <select id="srv-server" name="server">
-            {% for s in servers %}
-            <option value="{{ s }}" {% if s == settings.server %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-          </select>
+          <input id="srv-server" value="{{ moodys.server }}" readonly>
+
+          <label for="srv-driver">ODBC driver</label>
+          <input id="srv-driver" value="{{ moodys.driver }}" readonly>
+
+          <label for="srv-user">Username</label>
+          <input id="srv-user" value="{{ moodys.username }}" readonly>
 
           <label for="srv-db">Database</label>
           <input id="srv-db" name="database" value="{{ settings.database }}" placeholder="BMS_DPO" aria-describedby="srv-db-help">
-
-          <label for="srv-user">Username</label>
-          <input id="srv-user" name="username" autocomplete="off" value="{{ settings.username }}">
-
-          <label for="srv-pass">Password</label>
-          <input id="srv-pass" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for integrated security" value="">
-
-          <label for="srv-int">Security</label>
-          <span>
-            <input id="srv-int" name="use_integrated_security" type="checkbox" {% if settings.use_integrated_security %}checked{% endif %}>
-            Use Windows Integrated Security
-          </span>
         </div>
         <div class="button-row">
           <button type="submit" class="primary-button">Test and Save</button>
           <button type="submit" class="secondary-button" formaction="{{ url_for('admin_server_test') }}">Test Connection Only</button>
         </div>
         <p id="srv-db-help" class="field-help">
-          Server is chosen from the approved list above; database is user-defined and is sent exactly as typed
-          when you click <strong>Test and Save</strong> or <strong>Test Connection Only</strong>. Server,
-          database, username, and password are saved in an encrypted file under App_Data. The default
-          configuration uses Windows Integrated Security with no username or password, and database BMS_DPO.
+          BMS_DPO is stored on the same server as the RDM. Server, driver, and SQL login
+          are the Moody's Server settings. Set the database name here, usually BMS_DPO.
         </p>
       </form>
     </div>
 
-    <div id="sub-moodys" class="admin-subpanel">
+    <div id="sub-moodys" class="admin-subpanel" data-group="server">
       <form class="admin-edit-card project-panel-tab-card" method="post" action="{{ url_for('admin_moodys_save') }}">
         <div class="form-grid">
           <label for="mdy-server">Server</label>
@@ -80,8 +71,131 @@
           <button type="submit" class="secondary-button" formaction="{{ url_for('admin_moodys_test') }}">Test Connection Only</button>
         </div>
         <p class="field-help">
-          SQL login used when a new analysis connects to Moody's. The RDM database is chosen on New Analysis.
+          SQL login used for the RDM and for BMS_DPO on that same server. The RDM database is chosen on New Analysis.
           Leave the password blank to keep the saved value.
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <div id="admin-tab-curve" class="admin-tab-panel">
+    <h2>EP</h2>
+    <p class="muted">Moody's modeling uses one exceedance curve. OEP is the default.</p>
+    <form class="admin-edit-card" method="post" action="{{ url_for('admin_ep_type_save') }}">
+      <label class="radio">
+        <input type="radio" name="ep_type" value="1"{% if ep_type != 0 %} checked{% endif %}>
+        OEP (EPTYPE 1)
+      </label>
+      <label class="radio">
+        <input type="radio" name="ep_type" value="0"{% if ep_type == 0 %} checked{% endif %}>
+        AEP (EPTYPE 0)
+      </label>
+      <div class="button-row">
+        <button type="submit" class="primary-button">Save</button>
+      </div>
+      <p class="field-help">The next analysis run reads the portfolio curve from the selected type. AAL and standard deviation stay on the aggregate stats row, EPTYPE 0.</p>
+    </form>
+  </div>
+
+  <div id="admin-tab-ep" class="admin-tab-panel">
+    <h2>EP points</h2>
+    <p class="muted">Add return periods to the list. Drag a point onto a slot, or right-click it and choose the EP point.</p>
+    {% if ep_error %}<div class="alert alert-error">{{ ep_error }}</div>{% endif %}
+    <div class="ep-admin-layout">
+      <div class="ep-catalog-panel">
+        <h3>Available points</h3>
+        <form method="post" action="{{ url_for('admin_ep_catalog_add') }}" class="ep-catalog-add">
+          <input name="return_period" type="number" min="1" step="1" required aria-label="New return period">
+          <button type="submit" class="secondary-button">Add point</button>
+        </form>
+        <ul id="ep-catalog" class="ep-listbox">
+          {% for point in ep_catalog %}
+          <li draggable="true" data-period="{{ point }}">{{ point }}</li>
+          {% else %}
+          <li class="muted">No points yet.</li>
+          {% endfor %}
+        </ul>
+      </div>
+      <form method="post" action="{{ url_for('admin_ep_points_save') }}" id="default-ep-points">
+        <div id="ep-point-list">
+          {% for point in ep_points %}
+          <div class="ep-point-row">
+            <label class="ep-slot">EP_{{ loop.index }}</label>
+            <input name="return_period" type="number" min="0" step="1" value="{{ point }}" readonly required>
+            <button type="button" class="secondary-button ep-clear">Clear</button>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="button-row">
+          <button type="submit" class="primary-button">Save default EP points</button>
+        </div>
+        <p class="field-help">The application only supports up to 15 points. Drag a value from the list onto a slot, or right-click a value and choose EP_1 through EP_15. Unused rows are 0 and are not saved. Analyses that already have their own points are left as they are.</p>
+      </form>
+    </div>
+    <dialog id="ep-assign" class="ep-assign">
+      <p>Assign <strong id="ep-assign-value"></strong></p>
+      <div class="ep-assign-grid">
+        {% for point in ep_points %}
+        <button type="button" class="secondary-button" data-slot="{{ loop.index0 }}">EP_{{ loop.index }}</button>
+        {% endfor %}
+      </div>
+      <div class="button-row">
+        <button type="button" class="secondary-button" id="ep-assign-close">Cancel</button>
+      </div>
+    </dialog>
+  </div>
+
+  <div id="admin-tab-range" class="admin-tab-panel">
+    <h2>Set Range</h2>
+    <p class="muted">Exhibits group distance to coast and elevation into these bands. The stored location value is not shown.</p>
+    {% if range_error %}<div class="alert alert-error">{{ range_error }}</div>{% endif %}
+    <div class="admin-subtabs" data-group="range" role="tablist" aria-label="Range fields">
+      <button type="button" class="active" data-subtab="dtc">DTC</button>
+      <button type="button" data-subtab="elevation">Elevation</button>
+    </div>
+    <div id="sub-dtc" class="admin-subpanel active" data-group="range">
+      <form class="admin-edit-card" method="post" action="{{ url_for('admin_ranges_save') }}">
+        <input type="hidden" name="kind" value="dtc">
+        <table class="range-grid">
+          <thead><tr><th>Range</th><th>From</th><th>To</th></tr></thead>
+          <tbody>
+            {% for band in dtc_ranges %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td><input name="range_from" type="number" step="any" value="{{ band.start }}" required aria-label="DTC range {{ loop.index }} from"></td>
+              <td><input name="range_to" type="number" step="any" value="{{ band.end }}" required aria-label="DTC range {{ loop.index }} to"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="button-row">
+          <button type="submit" class="primary-button">Save DTC ranges</button>
+        </div>
+        <p class="field-help">
+          {% if ranges_saved.dtc %}These are the saved distance-to-coast bands, in miles.{% else %}Five equal bands from the minimum and maximum distance to coast in the EDM, in miles. Save to keep any edits.{% endif %}
+        </p>
+      </form>
+    </div>
+    <div id="sub-elevation" class="admin-subpanel" data-group="range">
+      <form class="admin-edit-card" method="post" action="{{ url_for('admin_ranges_save') }}">
+        <input type="hidden" name="kind" value="elevation">
+        <table class="range-grid">
+          <thead><tr><th>Range</th><th>From</th><th>To</th></tr></thead>
+          <tbody>
+            {% for band in elevation_ranges %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td><input name="range_from" type="number" step="any" value="{{ band.start }}" required aria-label="Elevation range {{ loop.index }} from"></td>
+              <td><input name="range_to" type="number" step="any" value="{{ band.end }}" required aria-label="Elevation range {{ loop.index }} to"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="button-row">
+          <button type="submit" class="primary-button">Save elevation ranges</button>
+        </div>
+        <p class="field-help">
+          {% if ranges_saved.elevation %}These are the saved elevation bands, in feet.{% else %}Five equal bands from the minimum and maximum elevation in the EDM, in feet. Unknown elevations of -999 are left out of the default. Save to keep any edits.{% endif %}
         </p>
       </form>
     </div>
@@ -91,18 +205,91 @@
 {% block scripts %}
 <script>
 (function () {
-  var buttons = document.querySelectorAll('.admin-subtabs button');
-  function show(id) {
-    buttons.forEach(function (b) { b.classList.toggle('active', b.dataset.subtab === id); });
-    document.querySelectorAll('.admin-subpanel').forEach(function (p) {
-      p.classList.toggle('active', p.id === 'sub-' + id);
+  var params = new URLSearchParams(window.location.search);
+  var subShows = {};
+  document.querySelectorAll('.admin-subtabs').forEach(function (bar) {
+    var group = bar.dataset.group || 'server';
+    var buttons = bar.querySelectorAll('button');
+    function show(id) {
+      buttons.forEach(function (b) { b.classList.toggle('active', b.dataset.subtab === id); });
+      document.querySelectorAll('.admin-subpanel[data-group="' + group + '"]').forEach(function (p) {
+        p.classList.toggle('active', p.id === 'sub-' + id);
+      });
+    }
+    buttons.forEach(function (b) {
+      b.addEventListener('click', function () { show(b.dataset.subtab); });
+    });
+    subShows[group] = show;
+  });
+  var initial = params.get('panel');
+  if ((initial === 'moodys' || initial === 'dpo') && subShows.server) subShows.server(initial);
+
+  var tabButtons = document.querySelectorAll('.admin-tabs button');
+  function showTab(id) {
+    tabButtons.forEach(function (b) { b.classList.toggle('active', b.dataset.tab === id); });
+    document.querySelectorAll('.admin-tab-panel').forEach(function (p) {
+      p.classList.toggle('active', p.id === 'admin-tab-' + id);
     });
   }
-  buttons.forEach(function (b) {
-    b.addEventListener('click', function () { show(b.dataset.subtab); });
+  tabButtons.forEach(function (b) {
+    b.addEventListener('click', function () { showTab(b.dataset.tab); });
   });
-  var initial = new URLSearchParams(window.location.search).get('panel');
-  if (initial === 'moodys' || initial === 'dpo') show(initial);
+  if (initial === 'ep' || initial === 'curve' || initial === 'range') showTab(initial);
+  if (initial === 'range' && subShows.range) subShows.range(params.get('range') || 'dtc');
+
+  var dragged = null;
+  var assignValue = null;
+  var assignDialog = document.getElementById('ep-assign');
+  function assignPeriod(value, slotIndex) {
+    var rows = document.querySelectorAll('#ep-point-list .ep-point-row');
+    if (!rows[slotIndex]) return;
+    document.querySelectorAll('#ep-point-list input').forEach(function (input) {
+      if (input.value === String(value)) input.value = '0';
+    });
+    rows[slotIndex].querySelector('input').value = value;
+  }
+  document.querySelectorAll('#ep-catalog li[data-period]').forEach(function (item) {
+    item.addEventListener('dragstart', function (event) {
+      dragged = item.dataset.period;
+      event.dataTransfer.setData('text/plain', dragged);
+      event.dataTransfer.effectAllowed = 'copy';
+    });
+    item.addEventListener('contextmenu', function (event) {
+      event.preventDefault();
+      assignValue = item.dataset.period;
+      document.getElementById('ep-assign-value').textContent = assignValue;
+      assignDialog.showModal();
+    });
+  });
+  document.querySelectorAll('#ep-assign [data-slot]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      if (assignValue) assignPeriod(assignValue, Number(button.dataset.slot));
+      assignDialog.close();
+    });
+  });
+  document.getElementById('ep-assign-close').addEventListener('click', function () {
+    assignDialog.close();
+  });
+  document.querySelectorAll('#ep-point-list .ep-point-row').forEach(function (row) {
+    row.addEventListener('dragover', function (event) {
+      event.preventDefault();
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', function () {
+      row.classList.remove('drag-over');
+    });
+    row.addEventListener('drop', function (event) {
+      event.preventDefault();
+      row.classList.remove('drag-over');
+      var value = event.dataTransfer.getData('text/plain') || dragged;
+      if (!value) return;
+      var rows = Array.prototype.slice.call(document.querySelectorAll('#ep-point-list .ep-point-row'));
+      assignPeriod(value, rows.indexOf(row));
+    });
+    row.querySelector('.ep-clear').addEventListener('click', function () {
+      row.querySelector('input').value = '0';
+    });
+  });
 })();
 </script>
 {% endblock %}

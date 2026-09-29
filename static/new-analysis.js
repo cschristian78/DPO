@@ -89,9 +89,9 @@
       });
   }
 
-  var search = document.getElementById('rdm-database-search');
   var note = document.getElementById('rdm-filter-note');
   var allNames = [];
+  var showAll = false;
 
   function dbPrefix(name) {
     var pos = String(name).indexOf('_');
@@ -105,49 +105,19 @@
   }
 
   function currentDatabase() {
-    if (search && !search.hidden) return search.value.trim();
     return database.value;
   }
 
-  function setNamed(el, on) {
-    if (!el) return;
-    if (on) el.setAttribute('name', 'rdm_name');
-    else el.removeAttribute('name');
-  }
-
   function fillSelect(names, selected) {
-    database.hidden = false;
-    if (search) search.hidden = true;
-    setNamed(database, true);
-    setNamed(search, false);
-    database.required = true;
-    if (search) search.required = false;
     database.innerHTML = '';
     database.add(new Option(names.length ? 'Select an RDM database' : 'No RDM databases found', ''));
     names.forEach(function (name) { database.add(new Option(name, name)); });
     if (selected && names.indexOf(selected) >= 0) database.value = selected;
   }
 
-  function showSearch(selected) {
-    database.hidden = true;
-    search.hidden = false;
-    setNamed(database, false);
-    setNamed(search, true);
-    database.required = false;
-    search.required = true;
-    search.value = selected || '';
-    var list = document.getElementById('rdm-database-list');
-    list.innerHTML = '';
-    allNames.forEach(function (name) {
-      var opt = document.createElement('option');
-      opt.value = name;
-      list.appendChild(opt);
-    });
-  }
-
   function applyClientFilter(preserve) {
     var short = clientShort();
-    if (!short) {
+    if (!showAll && !short) {
       if (note) {
         note.hidden = false;
         note.textContent = 'Select a client. The client short name filters the RDM list.';
@@ -155,20 +125,23 @@
       fillSelect([], '');
       return;
     }
-    var matches = allNames.filter(function (name) {
+    var matches = showAll ? allNames.slice() : allNames.filter(function (name) {
       return dbPrefix(name).toLowerCase() === short.toLowerCase();
     });
     if (matches.length) {
-      if (note) { note.hidden = true; note.textContent = ''; }
+      if (note) {
+        note.hidden = !showAll;
+        note.textContent = showAll ? 'Showing all RDM databases.' : '';
+        if (showAll) note.hidden = false;
+      }
       fillSelect(matches, preserve);
       if (database.value) loadAnalyses();
     } else {
       if (note) {
         note.hidden = false;
-        note.textContent = 'No RDM databases match short name ' + short + '. Type to search all databases.';
+        note.textContent = 'No RDM databases match short name ' + short + '. Choose Show All DB to list every RDM.';
       }
-      showSearch(allNames.indexOf(preserve) >= 0 ? preserve : '');
-      if (search.value && allNames.indexOf(search.value) >= 0) loadAnalyses();
+      fillSelect([], '');
     }
     if (!currentDatabase()) {
       select.innerHTML = '';
@@ -182,6 +155,7 @@
     document.getElementById('edm-name').value = row ? (row.edmName || '') : '';
     document.getElementById('portfolio-id').value = row && row.portfolioId != null ? row.portfolioId : '';
     document.getElementById('peril').value = row ? (row.peril || '') : '';
+    document.getElementById('engine-version').value = row ? (row.engineVersion || '') : '';
     document.getElementById('rdm-analysis-id').value = row ? row.id : '';
     document.getElementById('rdm-analysis-name').value = row ? (row.name || '') : '';
     if (row) loadSummary(currentDatabase(), row.id);
@@ -244,10 +218,28 @@
 
   refreshBtn.addEventListener('click', function () {
     userPicked = true;
-    loadDatabases();
+    showAll = true;
+    var current = database.value;
+    function revealAll() {
+      fillSelect(allNames, current);
+      if (note) {
+        note.hidden = false;
+        note.textContent = 'Showing all RDM databases.';
+      }
+      if (database.value) loadAnalyses();
+      else {
+        select.innerHTML = '';
+        select.add(new Option('Select an RDM database', ''));
+        rows = [];
+        fill(null);
+      }
+    }
+    if (allNames.length) revealAll();
+    else loadDatabases();
   });
   document.getElementById('client').addEventListener('change', function () {
     userPicked = true;
+    showAll = false;
     initialAnalysisId = '';
     applyClientFilter('');
   });
@@ -256,13 +248,6 @@
     initialAnalysisId = '';
     loadAnalyses();
   });
-  if (search) {
-    search.addEventListener('change', function () {
-      userPicked = true;
-      initialAnalysisId = '';
-      if (allNames.indexOf(search.value.trim()) >= 0) loadAnalyses();
-    });
-  }
   select.addEventListener('change', function () {
     userPicked = true;
     var row = select.value === '' ? null : rows[Number(select.value)];

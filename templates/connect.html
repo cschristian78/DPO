@@ -29,9 +29,7 @@
         <select id="rdm-database" name="rdm_name" required>
           <option value="">Select a client first</option>
         </select>
-        <input id="rdm-database-search" list="rdm-database-list" autocomplete="off" placeholder="Type to search RDM databases" hidden>
-        <datalist id="rdm-database-list"></datalist>
-        <button type="button" class="secondary-button" id="refresh-rdm">Refresh db list</button>
+        <button type="button" class="secondary-button" id="refresh-rdm">Show All DB</button>
       </span>
       <p class="field-help" id="rdm-filter-note" hidden></p>
     </div>
@@ -40,6 +38,9 @@
     <select id="rdm-analysis" required>
       <option value="">Select an RDM database</option>
     </select>
+
+    <label for="engine-version">Engine version</label>
+    <input id="engine-version" readonly>
 
     <label for="edm-name">EDM name</label>
     <input id="edm-name" name="edm_name" readonly>
@@ -52,14 +53,14 @@
   </div>
   <input type="hidden" name="rdm_analysis_id" id="rdm-analysis-id">
   <input type="hidden" name="rdm_analysis_name" id="rdm-analysis-name">
-  <p class="field-help">Analysis name, description, and client are entered here. The client short name filters the RDM list. EDM name, portfolio, and peril are copied from the selected RDM analysis.</p>
+  <p class="field-help">Analysis name, description, and client are entered here. The client short name filters the RDM list. Show All DB lists every RDM. Engine version, EDM name, portfolio, and peril are copied from the selected RDM analysis.</p>
   <div class="button-row">
     <button type="submit" class="primary-button" id="create-analysis">Next</button>
   </div>
 </form>
 <aside class="card summary-panel" id="port-summary" aria-live="polite">
   <h2>Portfolio summary</h2>
-  <p class="field-help">AAL is the pure premium from rdm_portstats.</p>
+  <p class="field-help">AAL and standard deviation are the aggregate pure premium and total standard deviation from rdm_portstats (EPTYPE 0).</p>
   <p class="muted" id="port-summary-status">Select an RDM analysis.</p>
   <div id="port-summary-line" class="summary-line" hidden></div>
 </aside>

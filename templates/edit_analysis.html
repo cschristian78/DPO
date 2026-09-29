@@ -30,9 +30,7 @@
         <select id="rdm-database" name="rdm_name" required>
           <option value="{{ analysis.rdm_name }}" selected>{{ analysis.rdm_name }}</option>
         </select>
-        <input id="rdm-database-search" list="rdm-database-list" autocomplete="off" placeholder="Type to search RDM databases" hidden>
-        <datalist id="rdm-database-list"></datalist>
-        <button type="button" class="secondary-button" id="refresh-rdm">Refresh db list</button>
+        <button type="button" class="secondary-button" id="refresh-rdm">Show All DB</button>
       </span>
       <p class="field-help" id="rdm-filter-note" hidden></p>
     </div>
@@ -41,6 +39,9 @@
     <select id="rdm-analysis" required>
       <option value="">{{ analysis.rdm_analysis_name }}</option>
     </select>
+
+    <label for="engine-version">Engine version</label>
+    <input id="engine-version" value="{{ engine_version }}" readonly>
 
     <label for="edm-name">EDM name</label>
     <input id="edm-name" name="edm_name" value="{{ analysis.edm_name }}" readonly>
@@ -53,7 +54,7 @@
   </div>
   <input type="hidden" name="rdm_analysis_id" id="rdm-analysis-id" value="{{ analysis.rdm_analysis_id }}">
   <input type="hidden" name="rdm_analysis_name" id="rdm-analysis-name" value="{{ analysis.rdm_analysis_name }}">
-  <p class="field-help">Change the RDM analysis to refresh EDM name, portfolio, and peril. Client choices are active clients from BMS_CMS.</p>
+  <p class="field-help">Change the RDM analysis to refresh engine version, EDM name, portfolio, and peril. Client choices are active clients from BMS_CMS.</p>
   <div class="button-row">
     <button type="submit" class="primary-button">Save analysis</button>
     <a class="secondary-button" href="{{ url_for('analysis_settings', analysis_id=analysis.id) }}">Settings</a>
@@ -62,7 +63,7 @@
 </form>
 <aside class="card summary-panel" id="port-summary" aria-live="polite">
   <h2>Portfolio summary</h2>
-  <p class="field-help">AAL is the pure premium from rdm_portstats.</p>
+  <p class="field-help">AAL and standard deviation are the aggregate pure premium and total standard deviation from rdm_portstats (EPTYPE 0).</p>
   <p class="muted" id="port-summary-status">Select an RDM analysis.</p>
   <div id="port-summary-line" class="summary-line" hidden></div>
 </aside>

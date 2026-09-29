@@ -35,7 +35,8 @@
       {% set analysis_section = request.endpoint in (
         'analysis_list', 'delete_analysis', 'new_analysis', 'create_analysis',
         'edit_analysis', 'update_analysis',
-        'analysis_settings', 'save_analysis_settings', 'update_analysis_settings'
+        'analysis_settings', 'save_analysis_settings', 'update_analysis_settings',
+        'save_analysis_ep_points', 'write_portfolio_results'
       ) %}
       {% if analysis_section %}
       <a class="sidebar-nav-item{% if request.endpoint == 'analysis_list' %} active{% endif %}" href="{{ url_for('analysis_list') }}" title="Analysis List"{% if request.endpoint == 'analysis_list' %} aria-current="page"{% endif %}>

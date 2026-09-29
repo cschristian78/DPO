@@ -25,8 +25,12 @@ net before tax):
    (tiny negative interpolation noise is clipped to 0).
 """
 
+import math
+
 import numpy as np
 import pandas as pd
+
+from rdm.math_special import regularized_incomplete_beta, regularized_incomplete_beta_array
 
 # Exceedance-probability / return-period points used on every PML/XPML curve.
 TARGET_POINTS = [5, 10, 25, 50, 75, 100, 130, 250, 500, 750, 1000]
@@ -51,6 +55,20 @@ def ep_curve(event_losses):
     return tps, losses
 
 
+def portfolio_pml_from_portep(exceedance, losses, points):
+    """Interpolate rdm_portep losses at target return periods.
+
+    exceedance is the EP column (probability). Return period is 1 / EP.
+    Negative RMS sentinels are ignored.
+    """
+    ep = np.asarray(exceedance, dtype=float)
+    values = np.asarray(losses, dtype=float)
+    mask = np.isfinite(ep) & (ep > 0) & np.isfinite(values) & (values >= 0)
+    if not np.any(mask):
+        return np.full(len(points), np.nan)
+    return pml_at_points(1.0 / ep[mask], values[mask], points)
+
+
 def pml_at_points(return_periods, losses, points=TARGET_POINTS):
     """Interpolate losses at target return periods (linear in EP space)."""
     return_periods = np.asarray(return_periods, dtype=float)
@@ -68,6 +86,136 @@ def pml_at_points(return_periods, losses, points=TARGET_POINTS):
     # more frequent than any modelled event -> smallest modelled loss.
     vals = np.interp(target_ep, ep_a, l_a, left=l_a[0], right=l_a[-1])
     return vals
+
+
+def subtract_elt(portfolio_loss, entity_loss):
+    """Portfolio event loss minus the loss-level event loss, floored at zero."""
+    portfolio_loss = np.asarray(portfolio_loss, dtype=float)
+    entity_loss = np.asarray(entity_loss, dtype=float)
+    remaining = portfolio_loss - entity_loss
+    np.maximum(remaining, 0.0, out=remaining)
+    return remaining
+
+
+def annual_metrics(mean, std, rate):
+    """AAL and total standard deviation of an event loss table.
+
+    AAL is the sum of annual rate times mean loss. The standard deviation is
+    the compound-Poisson total, sqrt(sum(rate * (mean^2 + std^2))).
+    """
+    mean = np.asarray(mean, dtype=float)
+    std = np.asarray(std, dtype=float)
+    rate = np.asarray(rate, dtype=float)
+    aal = float(np.sum(rate * mean))
+    variance = float(np.sum(rate * (mean * mean + std * std)))
+    if variance <= 0.0:
+        return aal, 0.0
+    return aal, math.sqrt(variance)
+
+
+def excluding_annual(mean, std, rate, removed):
+    """AAL and standard deviation of the portfolio after one risk is removed."""
+    mean = np.asarray(mean, dtype=float)
+    remaining = subtract_elt(mean, removed)
+    scale = np.zeros(mean.shape, dtype=float)
+    positive = mean > 0
+    scale[positive] = remaining[positive] / mean[positive]
+    return annual_metrics(remaining, np.asarray(std, dtype=float) * scale, rate)
+
+
+def _beta_survival(mean, std, exposure, loss):
+    """P(severity > loss) for one event. Zero stddev is a point mass at the mean."""
+    if loss <= 0.0:
+        return 1.0
+    if mean <= 0.0:
+        return 0.0
+    maximum = exposure if exposure > mean else mean
+    if loss >= maximum:
+        return 0.0
+    if std <= 0.0:
+        return 1.0 if mean > loss else 0.0
+    mu = mean / maximum
+    var = (std / maximum) ** 2
+    cap = mu * (1.0 - mu) * 0.99
+    if var > cap:
+        var = cap
+    if var <= 0.0:
+        return 1.0 if mean > loss else 0.0
+    factor = mu * (1.0 - mu) / var - 1.0
+    a = mu * factor
+    b = (1.0 - mu) * factor
+    return 1.0 - regularized_incomplete_beta(a, b, loss / maximum)
+
+
+def _beta_survival_array(mean, std, exposure, loss):
+    """P(severity > loss) for every event at one loss threshold."""
+    mean = np.asarray(mean, dtype=float)
+    std = np.asarray(std, dtype=float)
+    exposure = np.asarray(exposure, dtype=float)
+    survival = np.zeros(mean.shape, dtype=float)
+    if loss <= 0.0:
+        survival[mean > 0.0] = 1.0
+        return survival
+    maximum = np.maximum(exposure, mean)
+    point = (std <= 0.0) & (mean > loss) & (mean > 0.0)
+    survival[point] = 1.0
+    beta = (mean > 0.0) & (std > 0.0) & (loss < maximum)
+    if not np.any(beta):
+        return survival
+    mu = mean[beta] / maximum[beta]
+    var = (std[beta] / maximum[beta]) ** 2
+    cap = mu * (1.0 - mu) * 0.99
+    var = np.minimum(var, cap)
+    factor = np.maximum(mu * (1.0 - mu) / np.maximum(var, 1e-18) - 1.0, 1e-8)
+    a = mu * factor
+    b = (1.0 - mu) * factor
+    cdf = regularized_incomplete_beta_array(a, b, loss / maximum[beta])
+    survival[beta] = 1.0 - cdf
+    return survival
+
+
+def occurrence_ep(mean, std, exposure, rate, loss):
+    """Occurrence exceedance probability of a loss threshold.
+
+    Each event is an independent Poisson arrival. Severity is beta-distributed
+    on [0, exposure] using the event mean and standard deviation. The caller
+    supplies that standard deviation as STDDEVI + STDDEVC.
+    """
+    rate = np.asarray(rate, dtype=float)
+    expected = float(np.sum(rate * _beta_survival_array(mean, std, exposure, loss)))
+    if expected <= 0.0:
+        return 0.0
+    return 1.0 - math.exp(-expected)
+
+
+def pml_from_elt(mean, std, exposure, rate, points):
+    """Loss at each return period from an event loss table."""
+    mean = np.asarray(mean, dtype=float)
+    std = np.asarray(std, dtype=float)
+    exposure = np.asarray(exposure, dtype=float)
+    rate = np.asarray(rate, dtype=float)
+    points = np.asarray(points, dtype=float)
+    active = (rate > 0.0) & (mean > 0.0) & np.isfinite(mean)
+    if not np.any(active):
+        return np.zeros(points.shape)
+    maximum = float(np.max(np.maximum(exposure[active], mean[active])))
+    out = np.zeros(points.shape)
+    for j, period in enumerate(points):
+        if period <= 0.0:
+            continue
+        target = 1.0 / period
+        low = 0.0
+        high = maximum
+        if occurrence_ep(mean, std, exposure, rate, 0.0) <= target:
+            continue
+        for _ in range(40):
+            mid = 0.5 * (low + high)
+            if occurrence_ep(mean, std, exposure, rate, mid) > target:
+                low = mid
+            else:
+                high = mid
+        out[j] = 0.5 * (low + high)
+    return out
 
 
 def downsample_curve(return_periods, losses, max_points=1000):

@@ -47,7 +47,9 @@ BEGIN
         (2, 'Policy'),
         (3, 'Location'),
         (4, 'Lob'),
-        (5, 'Other')
+        (5, 'County'),
+        (6, 'State'),
+        (7, 'Other')
     ) AS src (LossLevelID, LossLevelName)
       ON tgt.LossLevelID = src.LossLevelID
     WHEN NOT MATCHED BY TARGET THEN
@@ -102,15 +104,30 @@ BEGIN
         );
     END;
 
+    -- Slots 1 through 11 are the starting defaults. Slots 12 through 15
+    -- stay empty and are shown as 0 until a return period is assigned.
     MERGE dbo.tEpPoint AS tgt
     USING (VALUES
-        (5), (10), (25), (50), (75), (100),
-        (130), (250), (500), (750), (1000)
-    ) AS src (ReturnPeriod)
+          (2, 1)
+        , (5, 2)
+        , (10, 3)
+        , (25, 4)
+        , (50, 5)
+        , (75, 6)
+        , (100, 7)
+        , (130, 8)
+        , (150, 9)
+        , (250, 10)
+        , (500, 11)
+        , (750, 12)
+        , (1000, 13)
+        , (5000, 14)
+        , (10000, 15)
+    ) AS src (ReturnPeriod, SortOrder)
       ON tgt.ReturnPeriod = src.ReturnPeriod
     WHEN NOT MATCHED BY TARGET THEN
         INSERT (ReturnPeriod, SortOrder, IsActive)
-        VALUES (src.ReturnPeriod, src.ReturnPeriod, 1);
+        VALUES (src.ReturnPeriod, src.SortOrder, 1);
 END;
 GO
 
@@ -207,6 +224,8 @@ BEGIN
                 CONSTRAINT DF_tAnalysisRun_RunStatus DEFAULT ('Queued'),
             EventCount          INT            NULL,
             EntityCount         INT            NULL,
+            PortfolioAal        FLOAT          NULL,
+            PortfolioStandardDeviation FLOAT   NULL,
             ErrorMessage        NVARCHAR(4000) NULL,
             CreatedAt           DATETIME2(0)   NOT NULL
                 CONSTRAINT DF_tAnalysisRun_CreatedAt DEFAULT (SYSUTCDATETIME()),
@@ -219,6 +238,12 @@ BEGIN
                 CHECK (RunStatus IN ('Queued', 'Running', 'Complete', 'Failed'))
         );
     END;
+
+    IF COL_LENGTH(N'dbo.tAnalysisRun', N'PortfolioAal') IS NULL
+        ALTER TABLE dbo.tAnalysisRun ADD PortfolioAal FLOAT NULL;
+
+    IF COL_LENGTH(N'dbo.tAnalysisRun', N'PortfolioStandardDeviation') IS NULL
+        ALTER TABLE dbo.tAnalysisRun ADD PortfolioStandardDeviation FLOAT NULL;
 END;
 GO
 
@@ -248,6 +273,147 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.usp_CreateTable_tAnalysisUserLog
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID(N'dbo.tAnalysisUserLog', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.tAnalysisUserLog (
+            AnalysisUserLogID   INT            IDENTITY(1,1) NOT NULL,
+            AnalysisID          INT            NOT NULL,
+            AnalysisRunID       INT            NULL,
+            LoggedAt            DATETIME2(0)   NOT NULL
+                CONSTRAINT DF_tAnalysisUserLog_LoggedAt DEFAULT (SYSUTCDATETIME()),
+            ElapsedSeconds      FLOAT          NULL,
+            LocationsCompleted  INT            NULL,
+            LocationsTotal      INT            NULL,
+            Message             NVARCHAR(500)  NOT NULL,
+            CONSTRAINT PK_tAnalysisUserLog PRIMARY KEY CLUSTERED (AnalysisUserLogID),
+            CONSTRAINT FK_tAnalysisUserLog_tAnalysis
+                FOREIGN KEY (AnalysisID) REFERENCES dbo.tAnalysis (AnalysisID)
+        );
+        CREATE INDEX IX_tAnalysisUserLog_AnalysisID
+            ON dbo.tAnalysisUserLog (AnalysisID, AnalysisUserLogID);
+    END;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_AnalysisUserLog_Add
+    @AnalysisID         INT,
+    @AnalysisRunID      INT = NULL,
+    @ElapsedSeconds     FLOAT = NULL,
+    @LocationsCompleted INT = NULL,
+    @LocationsTotal     INT = NULL,
+    @Message            NVARCHAR(500)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.tAnalysisUserLog (
+        AnalysisID, AnalysisRunID, ElapsedSeconds,
+        LocationsCompleted, LocationsTotal, Message)
+    VALUES (
+        @AnalysisID, @AnalysisRunID, @ElapsedSeconds,
+        @LocationsCompleted, @LocationsTotal, @Message);
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_CreateTable_tLocationExposure
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID(N'dbo.tLocationExposure', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.tLocationExposure (
+            LocationExposureID  INT            IDENTITY(1,1) NOT NULL,
+            AnalysisID          INT            NOT NULL,
+            ExposureLevelID     NVARCHAR(40)   NOT NULL,
+            Construction        NVARCHAR(160)  NULL,
+            Occupancy           NVARCHAR(160)  NULL,
+            NumberOfStories     SMALLINT       NULL,
+            YearBuilt           SMALLINT       NULL,
+            FloorArea           FLOAT          NULL,
+            InceptDate          DATETIME       NULL,
+            ExpireDate          DATETIME       NULL,
+            Admin1Code          NVARCHAR(16)   NULL,
+            Admin2Name          NVARCHAR(256)  NULL,
+            StreetAddress       NVARCHAR(256)  NULL,
+            PostalCode          NVARCHAR(16)   NULL,
+            Latitude            FLOAT          NULL,
+            Longitude           FLOAT          NULL,
+            LocationValue       FLOAT          NULL,
+            DistCoast           FLOAT          NULL,
+            Elevation           FLOAT          NULL,
+            CONSTRAINT PK_tLocationExposure PRIMARY KEY CLUSTERED (LocationExposureID),
+            CONSTRAINT FK_tLocationExposure_tAnalysis
+                FOREIGN KEY (AnalysisID) REFERENCES dbo.tAnalysis (AnalysisID),
+            CONSTRAINT UQ_tLocationExposure_AnalysisLocation
+                UNIQUE (AnalysisID, ExposureLevelID)
+        );
+    END;
+
+    IF COL_LENGTH(N'dbo.tLocationExposure', N'Admin2Name') < 512
+        ALTER TABLE dbo.tLocationExposure ALTER COLUMN Admin2Name NVARCHAR(256) NULL;
+    IF COL_LENGTH(N'dbo.tLocationExposure', N'Construction') < 320
+        ALTER TABLE dbo.tLocationExposure ALTER COLUMN Construction NVARCHAR(160) NULL;
+    IF COL_LENGTH(N'dbo.tLocationExposure', N'Occupancy') < 320
+        ALTER TABLE dbo.tLocationExposure ALTER COLUMN Occupancy NVARCHAR(160) NULL;
+    IF COL_LENGTH(N'dbo.tLocationExposure', N'DistCoast') IS NULL
+        ALTER TABLE dbo.tLocationExposure ADD DistCoast FLOAT NULL;
+    IF COL_LENGTH(N'dbo.tLocationExposure', N'Elevation') IS NULL
+        ALTER TABLE dbo.tLocationExposure ADD Elevation FLOAT NULL;
+    IF COL_LENGTH(N'dbo.tLocationExposure', N'StreetAddress') IS NULL
+        ALTER TABLE dbo.tLocationExposure ADD StreetAddress NVARCHAR(256) NULL;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_LocationExposure_Replace
+    @AnalysisID INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DELETE FROM dbo.tLocationExposure WHERE AnalysisID = @AnalysisID;
+END;
+GO
+
+CREATE OR ALTER VIEW dbo.vDiffExposure
+AS
+SELECT
+    s.AnalysisID,
+    r.AnalysisRunID,
+    r.EntityID AS ExposureLevelID,
+    r.ReturnPeriod,
+    r.PmlValue AS DiffValue,
+    e.Construction,
+    e.Occupancy,
+    e.NumberOfStories,
+    e.YearBuilt,
+    e.FloorArea,
+    e.InceptDate,
+    e.ExpireDate,
+    e.Admin1Code,
+    e.Admin2Name,
+    e.StreetAddress,
+    e.PostalCode,
+    e.Latitude,
+    e.Longitude,
+    e.LocationValue
+FROM dbo.tPmlResult AS r
+INNER JOIN dbo.tAnalysisRun AS run
+    ON run.AnalysisRunID = r.AnalysisRunID
+INNER JOIN dbo.tAnalysisSettings AS s
+    ON s.AnalysisSettingsID = run.AnalysisSettingsID
+LEFT JOIN dbo.tLocationExposure AS e
+    ON e.AnalysisID = s.AnalysisID
+   AND e.ExposureLevelID = r.EntityID
+WHERE r.ResultType = 'DIFF'
+  AND r.EntityID <> N'PORTFOLIO';
+GO
+
 CREATE OR ALTER PROCEDURE dbo.usp_Dpo_Initialize
 AS
 BEGIN
@@ -260,6 +426,8 @@ BEGIN
     EXEC dbo.usp_CreateTable_tAnalysisEpPoint;
     EXEC dbo.usp_CreateTable_tAnalysisRun;
     EXEC dbo.usp_CreateTable_tPmlResult;
+    EXEC dbo.usp_CreateTable_tAnalysisUserLog;
+    EXEC dbo.usp_CreateTable_tLocationExposure;
 END;
 GO
 
@@ -409,10 +577,28 @@ BEGIN
 
     SET @AnalysisSettingsID = SCOPE_IDENTITY();
 
-    INSERT INTO dbo.tAnalysisEpPoint (AnalysisSettingsID, EpPointID)
-    SELECT @AnalysisSettingsID, EpPointID
-    FROM dbo.tEpPoint
-    WHERE IsActive = 1;
+    IF EXISTS (
+        SELECT 1
+        FROM dbo.tAnalysisEpPoint AS a
+        INNER JOIN dbo.tAnalysisSettings AS s
+            ON s.AnalysisSettingsID = a.AnalysisSettingsID
+        WHERE s.AnalysisID = @AnalysisID
+    )
+    BEGIN
+        INSERT INTO dbo.tAnalysisEpPoint (AnalysisSettingsID, EpPointID)
+        SELECT DISTINCT @AnalysisSettingsID, a.EpPointID
+        FROM dbo.tAnalysisEpPoint AS a
+        INNER JOIN dbo.tAnalysisSettings AS s
+            ON s.AnalysisSettingsID = a.AnalysisSettingsID
+        WHERE s.AnalysisID = @AnalysisID;
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.tAnalysisEpPoint (AnalysisSettingsID, EpPointID)
+        SELECT @AnalysisSettingsID, EpPointID
+        FROM dbo.tEpPoint
+        WHERE IsActive = 1;
+    END;
 END;
 GO
 
@@ -485,6 +671,77 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.usp_EpPoint_CatalogAdd
+    @ReturnPeriod INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @ReturnPeriod <= 0
+        THROW 50003, 'Return period must be greater than zero.', 1;
+
+    IF EXISTS (SELECT 1 FROM dbo.tEpPoint WHERE ReturnPeriod = @ReturnPeriod)
+        THROW 50010, 'That point is already in the list.', 1;
+
+    INSERT INTO dbo.tEpPoint (ReturnPeriod, SortOrder, IsActive)
+    VALUES (@ReturnPeriod, @ReturnPeriod, 0);
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_EpPoint_Replace
+    @ReturnPeriods NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @parsed TABLE (
+        Slot         INT IDENTITY(1,1) PRIMARY KEY,
+        ReturnPeriod INT
+    );
+
+    DECLARE @xml XML = CAST('<i>' + REPLACE(@ReturnPeriods, ',', '</i><i>') + '</i>' AS XML);
+
+    INSERT INTO @parsed (ReturnPeriod)
+    SELECT TRY_CAST(LTRIM(RTRIM(node.value('.', 'varchar(20)'))) AS INT)
+    FROM @xml.nodes('/i') AS list(node);
+
+    DECLARE @slots TABLE (
+        Slot         INT PRIMARY KEY,
+        ReturnPeriod INT NOT NULL
+    );
+
+    INSERT INTO @slots (Slot, ReturnPeriod)
+    SELECT Slot, ReturnPeriod
+    FROM (
+        SELECT
+            Slot,
+            ReturnPeriod,
+            ROW_NUMBER() OVER (PARTITION BY ReturnPeriod ORDER BY Slot DESC) AS rn
+        FROM @parsed
+        WHERE ReturnPeriod > 0
+          AND Slot <= 15
+    ) AS ranked
+    WHERE rn = 1;
+
+    IF NOT EXISTS (SELECT 1 FROM @slots)
+        THROW 50003, 'Enter at least one EP point greater than zero.', 1;
+
+    INSERT INTO dbo.tEpPoint (ReturnPeriod, SortOrder, IsActive)
+    SELECT s.ReturnPeriod, s.Slot, 1
+    FROM @slots AS s
+    WHERE NOT EXISTS (
+        SELECT 1 FROM dbo.tEpPoint AS e WHERE e.ReturnPeriod = s.ReturnPeriod
+    );
+
+    UPDATE e
+    SET IsActive = CASE WHEN s.ReturnPeriod IS NULL THEN 0 ELSE 1 END,
+        SortOrder = CASE WHEN s.ReturnPeriod IS NULL THEN e.SortOrder ELSE s.Slot END
+    FROM dbo.tEpPoint AS e
+    LEFT JOIN @slots AS s
+        ON s.ReturnPeriod = e.ReturnPeriod;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.usp_EpPoint_List
 AS
 BEGIN
@@ -539,6 +796,52 @@ BEGIN
 
     IF @@ROWCOUNT = 0
         THROW 50004, 'Active EP point was not found.', 1;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_AnalysisEpPoint_Replace
+    @AnalysisID     INT,
+    @ReturnPeriods  NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.tAnalysis WHERE AnalysisID = @AnalysisID)
+        THROW 50002, 'Analysis was not found.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.tAnalysisSettings WHERE AnalysisID = @AnalysisID)
+        THROW 50007, 'Save a loss level and perspective before saving EP points.', 1;
+
+    DECLARE @points TABLE (ReturnPeriod INT PRIMARY KEY);
+
+    INSERT INTO @points (ReturnPeriod)
+    SELECT DISTINCT TRY_CAST(LTRIM(RTRIM(value)) AS INT)
+    FROM STRING_SPLIT(@ReturnPeriods, ',')
+    WHERE TRY_CAST(LTRIM(RTRIM(value)) AS INT) > 0;
+
+    IF NOT EXISTS (SELECT 1 FROM @points)
+        THROW 50003, 'Enter at least one EP point greater than zero.', 1;
+
+    INSERT INTO dbo.tEpPoint (ReturnPeriod, SortOrder, IsActive)
+    SELECT p.ReturnPeriod, p.ReturnPeriod, 0
+    FROM @points AS p
+    WHERE NOT EXISTS (
+        SELECT 1 FROM dbo.tEpPoint AS e WHERE e.ReturnPeriod = p.ReturnPeriod
+    );
+
+    DELETE a
+    FROM dbo.tAnalysisEpPoint AS a
+    INNER JOIN dbo.tAnalysisSettings AS s
+        ON s.AnalysisSettingsID = a.AnalysisSettingsID
+    WHERE s.AnalysisID = @AnalysisID;
+
+    INSERT INTO dbo.tAnalysisEpPoint (AnalysisSettingsID, EpPointID)
+    SELECT s.AnalysisSettingsID, e.EpPointID
+    FROM dbo.tAnalysisSettings AS s
+    CROSS JOIN dbo.tEpPoint AS e
+    INNER JOIN @points AS p
+        ON p.ReturnPeriod = e.ReturnPeriod
+    WHERE s.AnalysisID = @AnalysisID;
 END;
 GO
 
@@ -626,7 +929,9 @@ CREATE OR ALTER PROCEDURE dbo.usp_AnalysisRun_SetStatus
     @RunStatus      VARCHAR(20),
     @EventCount     INT = NULL,
     @EntityCount    INT = NULL,
-    @ErrorMessage   NVARCHAR(4000) = NULL
+    @ErrorMessage   NVARCHAR(4000) = NULL,
+    @PortfolioAal   FLOAT = NULL,
+    @PortfolioStandardDeviation FLOAT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -636,6 +941,8 @@ BEGIN
         EventCount = COALESCE(@EventCount, EventCount),
         EntityCount = COALESCE(@EntityCount, EntityCount),
         ErrorMessage = @ErrorMessage,
+        PortfolioAal = COALESCE(@PortfolioAal, PortfolioAal),
+        PortfolioStandardDeviation = COALESCE(@PortfolioStandardDeviation, PortfolioStandardDeviation),
         StartedAt = CASE
             WHEN @RunStatus = 'Running' AND StartedAt IS NULL THEN SYSUTCDATETIME()
             ELSE StartedAt

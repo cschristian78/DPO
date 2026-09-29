@@ -8,6 +8,7 @@ import base64
 import ctypes
 import json
 import os
+import threading
 from ctypes import wintypes
 
 ALLOWED_SERVERS = (
@@ -20,6 +21,7 @@ ALLOWED_SERVERS = (
 
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SETTINGS_PATH = os.path.join(_APP_ROOT, "App_Data", "connectionsettings.protected.json")
+_FILE_LOCK = threading.Lock()
 
 _CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
@@ -115,8 +117,12 @@ def _read_file():
 
 def _write_file(raw):
     os.makedirs(os.path.dirname(_SETTINGS_PATH), exist_ok=True)
-    with open(_SETTINGS_PATH, "w", encoding="utf-8") as fh:
+    temporary = _SETTINGS_PATH + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as fh:
         json.dump(raw, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temporary, _SETTINGS_PATH)
 
 
 def _moodys_defaults():
@@ -137,9 +143,65 @@ def load():
     settings["username"] = _unprotect(dpo.get("UserName"), "")
     settings["password"] = _unprotect(dpo.get("Password"), "")
     settings["use_integrated_security"] = bool(dpo.get("UseIntegratedSecurity", True))
-    if settings["server"] not in ALLOWED_SERVERS:
-        settings["server"] = ALLOWED_SERVERS[0]
     return settings
+
+
+def load_ep_type():
+    """Moody's curve used for modeling. 1 is OEP, 0 is AEP."""
+    raw = _read_file().get("EpType")
+    try:
+        ep_type = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return ep_type if ep_type in (0, 1) else 1
+
+
+def save_ep_type(ep_type):
+    ep_type = int(ep_type)
+    if ep_type not in (0, 1):
+        raise ValueError("Choose OEP or AEP.")
+    with _FILE_LOCK:
+        raw = _read_file()
+        raw["EpType"] = ep_type
+        _write_file(raw)
+
+
+def _stored_bands(value):
+    if not isinstance(value, list) or len(value) != 5:
+        return None
+    bands = []
+    for pair in value:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            return None
+        try:
+            start, end = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError):
+            return None
+        bands.append((start, end))
+    return bands
+
+
+def load_ranges():
+    """Saved DTC and elevation bands. None means the EDM default is still in use."""
+    raw = _read_file().get("Ranges") or {}
+    return {
+        "dtc": _stored_bands(raw.get("Dtc")),
+        "elevation": _stored_bands(raw.get("Elevation")),
+    }
+
+
+def save_ranges(kind, bands):
+    key = {"dtc": "Dtc", "elevation": "Elevation"}.get(kind)
+    if key is None:
+        raise ValueError("Choose DTC or Elevation.")
+    if len(bands) != 5:
+        raise ValueError("Enter five ranges.")
+    with _FILE_LOCK:
+        raw = _read_file()
+        stored = raw.get("Ranges") or {}
+        stored[key] = [[float(start), float(end)] for start, end in bands]
+        raw["Ranges"] = stored
+        _write_file(raw)
 
 
 def load_moodys():
@@ -153,6 +215,11 @@ def load_moodys():
 
 
 def save(settings):
+    with _FILE_LOCK:
+        _save_unlocked(settings)
+
+
+def _save_unlocked(settings):
     raw = _read_file()
     for key in ("Server", "Database", "UserName", "Password", "UseIntegratedSecurity"):
         raw.pop(key, None)
@@ -167,6 +234,11 @@ def save(settings):
 
 
 def save_moodys(settings):
+    with _FILE_LOCK:
+        _save_moodys_unlocked(settings)
+
+
+def _save_moodys_unlocked(settings):
     raw = _read_file()
     raw["Moodys"] = {
         "Server": _protect(settings["server"]) if settings["server"] else None,
