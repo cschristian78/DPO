@@ -1,10 +1,13 @@
 (function () {
   var el = document.getElementById("band-map");
   var dataEl = document.getElementById("band-map-data");
+  var measureSelect = document.getElementById("band-measure");
+  var periodWrap = document.getElementById("band-period-wrap");
   var periodSelect = document.getElementById("band-period");
+  var legend = document.getElementById("band-legend");
   var rowsEl = document.getElementById("band-rows");
   var applyButton = document.getElementById("band-apply");
-  if (!el || !dataEl || !periodSelect || !rowsEl || !window.L || !window.topojson) return;
+  if (!el || !dataEl || !measureSelect || !periodSelect || !rowsEl || !window.L || !window.topojson) return;
 
   var payload = {};
   try { payload = JSON.parse(dataEl.textContent || "{}"); } catch (e) { payload = {}; }
@@ -24,6 +27,11 @@
     return value === null || value === undefined || value === "" ? "" : String(value);
   }
 
+  function amount(value, digits) {
+    if (value == null || !isFinite(Number(value))) return "";
+    return Number(value).toLocaleString("en-US", { maximumFractionDigits: digits });
+  }
+
   function popup(point, diff) {
     var lines = [
       point.id,
@@ -35,12 +43,25 @@
       "Stories " + text(point.stories),
       "Year built " + text(point.yearBuilt),
       "Floor area " + (point.floorArea == null ? "" : Math.round(point.floorArea).toLocaleString("en-US")),
+      point.dtc == null ? "DTC Unknown" : "DTC " + amount(point.dtc, 2) + " mi",
+      point.elevation == null ? "Elevation Unknown" : "Elevation " + amount(point.elevation, 0) + " ft",
       point.incept ? "Incept " + point.incept : "",
       point.expire ? "Expire " + point.expire : "",
       point.locationValue == null ? "" : "Location value " + money.format(point.locationValue),
       "Marginal DIFF " + money.format(diff || 0)
     ];
     return lines.filter(Boolean).join("<br>");
+  }
+
+  function measure() {
+    return measureSelect.value || "diff";
+  }
+
+  function presetBands() {
+    var ranges = payload.ranges || {};
+    if (measure() === "dtc") return ranges.dtc || [];
+    if (measure() === "elevation") return ranges.elevation || [];
+    return null;
   }
 
   function round2(value) {
@@ -72,24 +93,38 @@
   }
 
   function buildRows() {
-    var edges = evenEdges(diffsForPeriod());
+    var preset = presetBands();
+    var edges = null;
+    var rowCount = 5;
+    if (preset) {
+      rowCount = preset.length;
+      if (!rowCount) {
+        rowsEl.replaceChildren();
+        if (status) status.textContent = measure() === "dtc"
+          ? "No distance-to-coast ranges are set."
+          : "No elevation ranges are set.";
+        return false;
+      }
+    } else {
+      edges = evenEdges(diffsForPeriod());
+    }
     rowsEl.replaceChildren();
-    for (var index = 0; index < 5; index += 1) {
+    for (var index = 0; index < rowCount; index += 1) {
       var row = document.createElement("div");
       row.className = "map-band-row";
       var color = document.createElement("input");
       color.type = "color";
-      color.value = colors[index];
+      color.value = colors[index % colors.length];
       color.setAttribute("aria-label", "Range " + (index + 1) + " color");
       var from = document.createElement("input");
       from.type = "number";
       from.step = "any";
-      from.value = String(edges[index]);
+      from.value = preset ? String(preset[index].start) : String(edges[index]);
       from.setAttribute("aria-label", "Range " + (index + 1) + " from");
       var to = document.createElement("input");
       to.type = "number";
       to.step = "any";
-      to.value = String(edges[index + 1]);
+      to.value = preset ? String(preset[index].end) : String(edges[index + 1]);
       to.setAttribute("aria-label", "Range " + (index + 1) + " to");
       var count = document.createElement("span");
       count.className = "map-band-count";
@@ -97,6 +132,7 @@
       row.append(color, from, to, count);
       rowsEl.appendChild(row);
     }
+    return true;
   }
 
   function readBands() {
@@ -132,15 +168,21 @@
       if (status) status.textContent = read.error;
       return;
     }
+    if (!pointsLayer) return;
     var bands = read.bands;
     var period = String(periodSelect.value);
+    var ranged = measure() !== "diff";
     var outside = 0;
+    var missing = 0;
     if (pointsLayer) pointsLayer.clearLayers();
     locations.forEach(function (point) {
       var diff = point.diffs && point.diffs[period] != null ? Number(point.diffs[period]) : 0;
-      var index = bandFor(diff, bands);
+      var raw = measure() === "dtc" ? point.dtc : measure() === "elevation" ? point.elevation : diff;
+      var absent = raw == null || !isFinite(Number(raw));
+      var index = absent ? -1 : bandFor(Number(raw), bands);
       var color = index < 0 ? outsideColor : bands[index].color;
-      if (index < 0) outside += 1;
+      if (absent && ranged) missing += 1;
+      else if (index < 0) outside += 1;
       else bands[index].count += 1;
       L.circleMarker([point.lat, point.lon], {
         radius: 3.5,
@@ -154,14 +196,26 @@
       band.row.querySelector(".map-band-count").textContent = String(band.count);
     });
     var message = locations.length + " locations plotted.";
+    if (missing) message += " " + missing + " have no " + (measure() === "dtc" ? "distance to coast" : "elevation") + ".";
     if (outside) message += " " + outside + " fall outside the ranges.";
     if (payload.skipped) message += " " + payload.skipped + " had no coordinates.";
     if (status) status.textContent = message;
   }
 
+  function syncMeasure() {
+    var diffMode = measure() === "diff";
+    if (periodWrap) periodWrap.hidden = !diffMode;
+    if (legend) {
+      legend.textContent = diffMode ? "DIFF ranges" : measure() === "dtc" ? "DTC ranges" : "Elevation ranges";
+    }
+    el.setAttribute("aria-label", diffMode
+      ? "All locations by DIFF range"
+      : measure() === "dtc" ? "All locations by DTC range" : "All locations by elevation range");
+  }
+
   function resetRanges() {
-    buildRows();
-    paint();
+    syncMeasure();
+    if (buildRows()) paint();
   }
 
   fetch(el.dataset.boundariesUrl)
@@ -198,6 +252,9 @@
       if (status) status.textContent = "The location map could not be loaded.";
     });
 
-  periodSelect.addEventListener("change", resetRanges);
+  measureSelect.addEventListener("change", resetRanges);
+  periodSelect.addEventListener("change", function () {
+    if (measure() === "diff") resetRanges();
+  });
   applyButton.addEventListener("click", paint);
 })();

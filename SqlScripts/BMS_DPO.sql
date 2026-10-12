@@ -273,6 +273,26 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.usp_CreateTable_tExclMetric
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID(N'dbo.tExclMetric', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.tExclMetric (
+            AnalysisRunID       INT            NOT NULL,
+            EntityID            NVARCHAR(255)  NOT NULL,
+            Aal                 FLOAT          NOT NULL,
+            StandardDeviation   FLOAT          NOT NULL,
+            CONSTRAINT PK_tExclMetric PRIMARY KEY CLUSTERED (AnalysisRunID, EntityID),
+            CONSTRAINT FK_tExclMetric_tAnalysisRun
+                FOREIGN KEY (AnalysisRunID) REFERENCES dbo.tAnalysisRun (AnalysisRunID)
+        );
+    END;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.usp_CreateTable_tAnalysisUserLog
 AS
 BEGIN
@@ -426,6 +446,7 @@ BEGIN
     EXEC dbo.usp_CreateTable_tAnalysisEpPoint;
     EXEC dbo.usp_CreateTable_tAnalysisRun;
     EXEC dbo.usp_CreateTable_tPmlResult;
+    EXEC dbo.usp_CreateTable_tExclMetric;
     EXEC dbo.usp_CreateTable_tAnalysisUserLog;
     EXEC dbo.usp_CreateTable_tLocationExposure;
 END;

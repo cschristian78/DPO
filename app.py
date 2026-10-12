@@ -16,8 +16,11 @@ Flow:
 
 import os
 import secrets
+import threading
 import time
 from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from datetime import timezone
 
 import numpy as np
 import pandas as pd
@@ -29,10 +32,14 @@ from rdm import db as rdm_db
 from rdm import schema as rdm_schema
 from rdm import client_match
 from rdm import settings_store as rdm_settings
+from rdm import exclude_pool
 from rdm import results_store
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
+_RUN_LOCK = threading.Lock()
+_RUNNING_ANALYSES = set()
+_RUN_STARTED = {}
 
 APP_CFG, SCHEMA = rdm_schema.load_config("config.yaml")
 
@@ -242,8 +249,13 @@ def _dashboard_for(analysis_id, return_period, chart_limit=10):
             return None
         if return_period not in periods:
             return_period = 100 if 100 in periods else periods[len(periods) // 2]
-        portfolio = stored["DIFF"].get("PORTFOLIO", {}).get(
-            return_period, stored["EXCL"].get("PORTFOLIO", {}).get(return_period, 0.0))
+        portfolio_diff = stored["DIFF"].get("PORTFOLIO", {})
+        portfolio_excl = stored["EXCL"].get("PORTFOLIO", {})
+        portfolio_by_period = {
+            period: float(portfolio_diff.get(period, portfolio_excl.get(period, 0.0)) or 0.0)
+            for period in periods
+        }
+        portfolio = portfolio_by_period.get(return_period, 0.0)
         rows = []
         for entity_id, by_period in stored["DIFF"].items():
             if entity_id == "PORTFOLIO":
@@ -300,6 +312,7 @@ def _dashboard_for(analysis_id, return_period, chart_limit=10):
             ],
             "return_period": return_period,
             "portfolio": portfolio,
+            "portfolio_by_period": portfolio_by_period,
             "rows": rows,
             "chart_limit": chart_limit,
             "result_rows": _result_rows("EXCL") + _result_rows("DIFF"),
@@ -378,6 +391,62 @@ def _range_fields(bands):
     while len(rows) < 5:
         rows.append({"start": "", "end": ""})
     return rows
+
+
+def _year_built_fields(bands):
+    rows = []
+    for label, start, end in list(bands)[:5]:
+        rows.append({
+            "label": label,
+            "start": "" if start is None else str(int(start)),
+            "end": "" if end is None else str(int(end)),
+        })
+    while len(rows) < 5:
+        rows.append({"label": "", "start": "", "end": ""})
+    return rows
+
+
+def _optional_year(raw):
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ValueError("Year built ranges must be whole years.") from exc
+
+
+def _parse_year_built_form(form):
+    labels = form.getlist("range_label")
+    starts = form.getlist("range_from")
+    ends = form.getlist("range_to")
+    if len(labels) != 5 or len(starts) != 5 or len(ends) != 5:
+        raise ValueError("Enter five year built ranges.")
+    bands = []
+    for index, (raw_label, raw_start, raw_end) in enumerate(zip(labels, starts, ends), start=1):
+        label = (raw_label or "").strip()
+        if not label:
+            raise ValueError(f"Range {index} needs a name.")
+        if label.lower() == "unknown":
+            raise ValueError("Unknown is reserved for a year built of 0.")
+        start = _optional_year(raw_start)
+        end = _optional_year(raw_end)
+        if start is None and end is None:
+            raise ValueError(f"Range {index} needs a from year, a to year, or both.")
+        if start == 0 or end == 0:
+            raise ValueError("Year 0 is Unknown and cannot be part of a range.")
+        if start is not None and end is not None and start > end:
+            raise ValueError(f"Range {index} starts above its end.")
+        if start is None and bands:
+            raise ValueError("Only the first range can omit From.")
+        if end is None and index != 5:
+            raise ValueError("Only the last range can omit To.")
+        if bands and bands[-1][2] is None:
+            raise ValueError("Only the last range can omit To.")
+        if bands and start is not None and bands[-1][2] is not None and start <= bands[-1][2]:
+            raise ValueError("Ranges must be in order and must not overlap.")
+        bands.append((label, start, end))
+    return bands
 
 
 def _band_text(start, end):
@@ -464,10 +533,21 @@ def _default_ranges():
     return _DEFAULT_RANGES
 
 
+_YEAR_BUILT_DEFAULTS = (
+    ("Pre-1937", None, 1936),
+    ("1937-1973", 1937, 1973),
+    ("1974-1988", 1974, 1988),
+    ("1989-2000", 1989, 2000),
+    ("Post-2000", 2001, None),
+)
+
+
 def _display_ranges():
     saved = rdm_settings.load_ranges()
     defaults = None
-    ranges = {}
+    ranges = {
+        "year_built": saved.get("year_built") or list(_YEAR_BUILT_DEFAULTS),
+    }
     for key in ("dtc", "elevation"):
         if saved.get(key):
             ranges[key] = saved[key]
@@ -476,6 +556,38 @@ def _display_ranges():
             defaults = _default_ranges()
         ranges[key] = defaults[key]
     return ranges
+
+
+def _year_built_label(year, bands):
+    """Year 0 and a missing year are Unknown. Other years use the saved bands."""
+    if year is None or year == "":
+        return "Unknown"
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return "Unknown"
+    if year <= 0:
+        return "Unknown"
+    for label, start, end in bands:
+        if start is not None and year < start:
+            continue
+        if end is not None and year > end:
+            continue
+        return label
+    return "Other"
+
+
+def _year_built_counts(years, bands):
+    counts = Counter(_year_built_label(year, bands) for year in years)
+    pairs = []
+    if counts.get("Unknown"):
+        pairs.append(("Unknown", counts["Unknown"]))
+    for label, _start, _end in bands:
+        if counts.get(label):
+            pairs.append((label, counts[label]))
+    if counts.get("Other"):
+        pairs.append(("Other", counts["Other"]))
+    return pairs
 
 
 def _band_label(value, bands):
@@ -531,8 +643,54 @@ def _parse_range_form(form):
     return bands
 
 
-def _pml_impact(analysis_id, return_period, target, premium_target=None, premiums=None, name="Option 1"):
-    """Rank locations by marginal DIFF until the PML drop or the premium limit is reached."""
+def _pml_without_locations(analysis_id, return_period, entity_ids, original_pml):
+    """Occurrence PML of the portfolio after every selected location is removed."""
+    if not entity_ids:
+        return float(original_pml or 0)
+    analysis = _analysis_header(analysis_id)
+    settings = _analysis_settings_rows(analysis_id)
+    if not analysis or not settings:
+        return float(original_pml or 0)
+    row = settings[0]
+    rdm = _open_moodys(analysis["rdm_name"])
+    try:
+        cur = rdm.cursor()
+        event_ids, mean, std, exposure, rate = _portfolio_elt(
+            cur, analysis["rdm_analysis_id"], row["loss_perspective"], analysis["portfolio_id"])
+        if row["loss_level"] in ("State", "County"):
+            by_entity = _entity_event_losses(
+                cur, row["loss_level"], analysis["rdm_analysis_id"], row["loss_perspective"])
+            wanted = {str(entity_id) for entity_id in entity_ids}
+            by_entity = {key: value for key, value in by_entity.items() if key in wanted}
+        else:
+            by_entity = _entity_event_losses_for_ids(
+                cur, row["loss_level"], analysis["rdm_analysis_id"],
+                row["loss_perspective"], entity_ids)
+    finally:
+        rdm.close()
+    removed = np.zeros(mean.shape, dtype=float)
+    index = {int(event_id): slot for slot, event_id in enumerate(event_ids)}
+    for losses in by_entity.values():
+        for event_id, loss in losses.items():
+            slot = index.get(int(event_id))
+            if slot is not None:
+                removed[slot] += float(loss or 0)
+    remaining = rdm_analysis.subtract_elt(mean, removed)
+    scale = np.ones(mean.shape, dtype=float)
+    positive = mean > 0
+    scale[positive] = remaining[positive] / mean[positive]
+    scale[~positive] = 0.0
+    values = rdm_analysis.pml_from_elt(
+        remaining, std * scale, exposure * scale, rate, [return_period])
+    return float(values[0])
+
+
+def _pml_impact(analysis_id, return_period, target, premium_target=None, premiums=None, name="Option 1", refresh_ep=False):
+    """Rank locations by marginal DIFF until the PML drop or the premium limit is reached.
+
+    The summary uses the stored DIFF file. The excluding portfolio curve is
+    calculated only when refresh_ep is set.
+    """
     conn = _open_dpo()
     try:
         cur = conn.cursor()
@@ -609,23 +767,15 @@ def _pml_impact(analysis_id, return_period, target, premium_target=None, premium
         pml_so_far += item["diff"]
         premium_so_far += item["premium"]
         tiv_so_far += item["tiv"]
-        pml_hit = target and pml_so_far >= target
-        premium_hit = premium_target and premium_so_far >= premium_target
-        if target and premium_target:
-            if pml_hit or premium_hit:
-                break
-        elif pml_hit or premium_hit:
+        pml_hit = bool(target) and pml_so_far >= target
+        premium_hit = bool(premium_target) and premium_so_far >= premium_target
+        if pml_hit or premium_hit:
             break
     reached = (not target or pml_so_far >= target) and (not premium_target or premium_so_far >= premium_target)
     ranges = _display_ranges()
     for item in ranked:
         item["dtc"] = _band_label(item["dist_coast"], ranges["dtc"])
         item["elevation_band"] = _band_label(item["elevation"], ranges["elevation"])
-
-    def _decade(year):
-        if year is None:
-            return "Unknown"
-        return f"{(year // 10) * 10}s"
 
     def _area_band(area):
         if area is None:
@@ -684,11 +834,15 @@ def _pml_impact(analysis_id, return_period, target, premium_target=None, premium
         "tiv": tiv_so_far,
         "premium": premium_so_far,
         "original_pml": original_pml,
-        "new_pml": max(original_pml - pml_so_far, 0.0),
+        "ep_refreshed": bool(refresh_ep and chosen),
+        "new_pml": _pml_without_locations(
+            analysis_id, int(return_period),
+            [item["entity_id"] for item in chosen], original_pml)
+            if refresh_ep and chosen else None,
         "count": len(chosen),
         "available": len(ranked),
         "reached": reached,
-        "cumulative": chosen[-1]["cumulative"] if chosen else 0.0,
+        "cumulative": pml_so_far if chosen else 0.0,
         "locations": chosen,
         "points": points,
         "states": state_counts.most_common(),
@@ -697,7 +851,8 @@ def _pml_impact(analysis_id, return_period, target, premium_target=None, premium
             "Construction": _pie_slices(Counter(item["construction"] for item in chosen).most_common()),
             "Occupancy": _pie_slices(Counter(item["occupancy"] for item in chosen).most_common()),
             "Stories": _pie_slices(Counter(item["stories"] for item in chosen).most_common()),
-            "Year built": _pie_slices(Counter(_decade(item["year_built"]) for item in chosen).most_common()),
+            "Year built": _pie_slices(_year_built_counts(
+                (item["year_built"] for item in chosen), ranges["year_built"])),
             "Floor area": _pie_slices(Counter(_area_band(item["floor_area"]) for item in chosen).most_common()),
         },
         "modifiers": {
@@ -943,7 +1098,8 @@ def _map_view_points(analysis_id):
             """
             SELECT ExposureLevelID, Latitude, Longitude, Construction, Occupancy,
                    NumberOfStories, YearBuilt, FloorArea, InceptDate, ExpireDate,
-                   Admin1Code, Admin2Name, PostalCode, LocationValue, StreetAddress
+                   Admin1Code, Admin2Name, PostalCode, LocationValue, StreetAddress,
+                   DistCoast, Elevation
             FROM dbo.tLocationExposure
             WHERE AnalysisID = ?
             """,
@@ -952,6 +1108,7 @@ def _map_view_points(analysis_id):
     finally:
         conn.close()
     stored, periods = _read_result_curves(analysis_id)
+    ranges = _display_ranges()
     points = []
     skipped = 0
     for row in rows:
@@ -977,9 +1134,22 @@ def _map_view_points(analysis_id):
             "postalCode": row[12] or "",
             "locationValue": None if row[13] is None else float(row[13]),
             "street": "" if row[14] is None else str(row[14]).strip(),
+            "dtc": None if row[15] is None else float(row[15]),
+            "elevation": None if row[16] is None else float(row[16]),
             "diffs": {str(period): float(by_period.get(period, 0.0)) for period in periods},
         })
-    return {"periods": periods, "locations": points, "skipped": skipped}
+    def _range_payload(bands):
+        return [{"start": float(start), "end": float(end)} for start, end in bands]
+
+    return {
+        "periods": periods,
+        "locations": points,
+        "skipped": skipped,
+        "ranges": {
+            "dtc": _range_payload(ranges["dtc"]),
+            "elevation": _range_payload(ranges["elevation"]),
+        },
+    }
 
 
 def _money(value):
@@ -1040,17 +1210,25 @@ def reports():
                             "premium_target": premium_target if premium_target and premium_target > 0 else None,
                         })
                 else:
+                    portfolio_pml = float(
+                        (dashboard.get("portfolio_by_period") or {}).get(default_period) or 0)
+                    drop = int(round(portfolio_pml * 0.10)) if portfolio_pml > 0 else None
                     scenarios = [{
                         "name": "Option 1",
-                        "period": default_period, "pml": 25000000, "premium": "",
-                        "pml_target": 25000000, "premium_target": None,
+                        "period": default_period,
+                        "pml": "" if drop is None else drop,
+                        "premium": "",
+                        "pml_target": drop,
+                        "premium_target": None,
                     }]
                 premiums = _location_premiums(_analysis_header(selected))
+                refresh_ep = request.args.get("refresh_ep") == "1"
                 impacts = []
                 for option in scenarios:
                     built = _pml_impact(
                         selected, option["period"], option["pml_target"],
-                        option["premium_target"], premiums, option["name"])
+                        option["premium_target"], premiums, option["name"],
+                        refresh_ep=refresh_ep)
                     if built:
                         built["pml_input"] = option["pml"]
                         built["premium_input"] = option["premium"]
@@ -1114,17 +1292,32 @@ def new_analysis():
     return render_template("connect.html", clients=clients, error=error)
 
 
+def _moodys_database_names(fragment):
+    """Database names on the Moody's server whose name contains fragment."""
+    conn = _open_saved(_moodys_login(), "master", False)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sys.databases WHERE name LIKE ? ORDER BY name",
+            f"%{fragment}%")
+        return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 @app.route("/api/rdm-databases")
 def api_rdm_databases():
     try:
-        conn = _open_saved(_moodys_login(), "master", False)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT name FROM sys.databases WHERE name LIKE '%RDM%' ORDER BY name")
-            names = [r[0] for r in cur.fetchall()]
-        finally:
-            conn.close()
+        names = _moodys_database_names("RDM")
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"databases": names})
+
+
+@app.route("/api/edm-databases")
+def api_edm_databases():
+    try:
+        names = _moodys_database_names("EDM")
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"databases": names})
@@ -1198,7 +1391,6 @@ def api_rdm_portstats():
                         ) AS rn
                     FROM dbo.rdm_portstats
                     WHERE ANLSID = ?
-                      AND EPTYPE = 0
                 )
                 SELECT PerspCode, PUREPREMIUM, TOTALSTDDEV
                 FROM ranked
@@ -1399,6 +1591,10 @@ def analysis_settings(analysis_id):
         ep_points, ep_custom, default_ep_points = _analysis_ep_points(analysis_id)
     except Exception:
         ep_points, ep_custom, default_ep_points = [], False, []
+    try:
+        can_resume = bool((_analysis_progress().get(analysis_id) or {}).get("can_resume"))
+    except Exception:
+        can_resume = False
     return render_template(
         "analysis_settings.html",
         analysis=analysis,
@@ -1411,6 +1607,7 @@ def analysis_settings(analysis_id):
         error=request.args.get("error"),
         saved=request.args.get("saved"),
         open_ep=request.args.get("ep") == "1",
+        can_resume=can_resume,
     )
 
 
@@ -1565,24 +1762,27 @@ def _present_metric(value):
 
 
 def _portfolio_curve(rdm_cur, rdm_analysis_id, perspective, portfolio_id):
-    """Return the occurrence curve (rdm_portep EPTYPE 1) plus aggregate AAL and standard deviation (rdm_portstats EPTYPE 0)."""
-    rdm_cur.execute(
-        """
-        SELECT TOP 1 ID, PUREPREMIUM, TOTALSTDDEV
-        FROM dbo.rdm_portstats
-        WHERE ANLSID = ?
-          AND RTRIM(PERSPCODE) = ?
-          AND EPTYPE = 0
-          AND (? IS NULL OR ID = ?)
-        ORDER BY ID
-        """,
-        rdm_analysis_id, perspective, portfolio_id, portfolio_id)
-    stats = rdm_cur.fetchone()
-    if not stats:
-        raise RuntimeError(f"No aggregate rdm_portstats row for perspective {perspective}.")
-    portfolio = int(stats[0])
-    aal = _present_metric(stats[1])
-    standard_deviation = _present_metric(stats[2])
+    """Return-period points from the admin EP type, plus portfolio AAL and standard deviation.
+
+    The admin EP type selects rdm_portep only. AAL and standard deviation come
+    from rdm_portstats for this analysis and perspective, regardless of EPTYPE.
+    When that row was not published, both are calculated from the full event set.
+    """
+    portfolio = int(portfolio_id) if portfolio_id is not None else None
+    if portfolio is None:
+        rdm_cur.execute(
+            """
+            SELECT TOP 1 ID
+            FROM dbo.rdm_port
+            WHERE ANLSID = ? AND RTRIM(PERSPCODE) = ?
+            ORDER BY ID
+            """,
+            rdm_analysis_id, perspective)
+        found = rdm_cur.fetchone()
+        if not found:
+            raise RuntimeError(f"No rdm_port event losses for perspective {perspective}.")
+        portfolio = int(found[0])
+    ep_type = rdm_settings.load_ep_type()
     rdm_cur.execute(
         """
         SELECT EP, PERSPVALUE
@@ -1592,11 +1792,29 @@ def _portfolio_curve(rdm_cur, rdm_analysis_id, perspective, portfolio_id):
           AND EPTYPE = ?
           AND ID = ?
         """,
-        rdm_analysis_id, perspective, rdm_settings.load_ep_type(), portfolio)
+        rdm_analysis_id, perspective, ep_type, portfolio)
     rows = rdm_cur.fetchall()
     if not rows:
-        curve = "OEP" if rdm_settings.load_ep_type() == 1 else "AEP"
+        curve = "OEP" if ep_type == 1 else "AEP"
         raise RuntimeError(f"No {curve} curve in rdm_portep for perspective {perspective}.")
+    rdm_cur.execute(
+        """
+        SELECT TOP 1 PUREPREMIUM, TOTALSTDDEV
+        FROM dbo.rdm_portstats
+        WHERE ANLSID = ?
+          AND RTRIM(PERSPCODE) = ?
+        ORDER BY ID
+        """,
+        rdm_analysis_id, perspective)
+    stats = rdm_cur.fetchone()
+    aal = _present_metric(stats[0]) if stats else None
+    standard_deviation = _present_metric(stats[1]) if stats else None
+    if aal is None or standard_deviation is None:
+        _event_ids, mean, event_std, _exposure, rate = _portfolio_elt(
+            rdm_cur, rdm_analysis_id, perspective, portfolio)
+        calculated_aal, calculated_std = rdm_analysis.annual_metrics(mean, event_std, rate)
+        aal = calculated_aal if aal is None else aal
+        standard_deviation = calculated_std if standard_deviation is None else standard_deviation
     return [float(r[0]) for r in rows], [float(r[1]) for r in rows], aal, standard_deviation
 
 
@@ -1631,48 +1849,50 @@ def _portfolio_elt(rdm_cur, rdm_analysis_id, perspective, portfolio_id):
 def _level_stats(rdm_cur, loss_level, rdm_analysis_id, perspective):
     """Pure premium and total standard deviation by loss-level id.
 
-    Aggregate stats (EPTYPE 0) win when both an aggregate and an occurrence
-    row exist. A negative RMS placeholder is left unset.
+    The full-event-set row (EPTYPE 0) is used when that analysis published one.
+    Otherwise the published row for the id is used. A negative RMS placeholder
+    is left unset so the caller can calculate from the event losses.
     """
     table = _STATS_TABLE.get(loss_level)
     if table is None:
         return {}
     rdm_cur.execute(
         f"""
-        SELECT CONVERT(varchar(40), ID), PUREPREMIUM, TOTALSTDDEV, EPTYPE
+        SELECT CONVERT(varchar(40), ID), EPTYPE, PUREPREMIUM, TOTALSTDDEV
         FROM {table}
         WHERE ANLSID = ? AND RTRIM(PERSPCODE) = ?
         """,
         rdm_analysis_id, perspective)
     chosen = {}
-    for entity_id, pure_premium, total_stddev, ep_type in rdm_cur.fetchall():
-        key = str(entity_id)
-        rank = 0 if int(ep_type) == 0 else 1
-        current = chosen.get(key)
-        if current is None or rank < current[0]:
-            chosen[key] = (rank, _present_metric(pure_premium), _present_metric(total_stddev))
-    return {key: (aal, stddev) for key, (_rank, aal, stddev) in chosen.items()}
+    chosen_type = {}
+    for entity_id, ep_type, pure_premium, total_stddev in rdm_cur.fetchall():
+        key = str(entity_id).strip()
+        ep_type = int(ep_type or 0)
+        if key in chosen and not (chosen_type[key] != 0 and ep_type == 0):
+            continue
+        chosen[key] = (_present_metric(pure_premium), _present_metric(total_stddev))
+        chosen_type[key] = ep_type
+    return chosen
 
 
-def _portfolio_stats(rdm_cur, rdm_analysis_id, perspective, portfolio_id):
-    """Published portfolio pure premium and total standard deviation."""
+def _portfolio_stats(rdm_cur, rdm_analysis_id, perspective, _portfolio_id):
+    """Published portfolio pure premium and total standard deviation.
+
+    Matched on analysis and perspective only. EPTYPE is not required.
+    """
     rdm_cur.execute(
         """
-        SELECT PUREPREMIUM, TOTALSTDDEV, EPTYPE
+        SELECT TOP 1 PUREPREMIUM, TOTALSTDDEV
         FROM dbo.rdm_portstats
         WHERE ANLSID = ?
           AND RTRIM(PERSPCODE) = ?
-          AND (? IS NULL OR ID = ?)
+        ORDER BY ID
         """,
-        rdm_analysis_id, perspective, portfolio_id, portfolio_id)
-    chosen = None
-    for pure_premium, total_stddev, ep_type in rdm_cur.fetchall():
-        rank = 0 if int(ep_type) == 0 else 1
-        if chosen is None or rank < chosen[0]:
-            chosen = (rank, _present_metric(pure_premium), _present_metric(total_stddev))
-    if chosen is None:
+        rdm_analysis_id, perspective)
+    stats = rdm_cur.fetchone()
+    if not stats:
         return None, None
-    return chosen[1], chosen[2]
+    return _present_metric(stats[0]), _present_metric(stats[1])
 
 
 def _annual_from_losses(rate_by_event, losses):
@@ -1767,6 +1987,82 @@ def _result_metrics(analysis, run_id):
     return metrics
 
 
+def _stage_finished_ids(rdm_cur, finished_ids):
+    """Put completed numeric risk ids in a temp table on this RDM connection."""
+    numbers = []
+    for entity_id in finished_ids or ():
+        try:
+            numbers.append(int(entity_id))
+        except (TypeError, ValueError):
+            continue
+    if not numbers:
+        return False
+    rdm_cur.execute("IF OBJECT_ID('tempdb..#FinishedRisk') IS NOT NULL DROP TABLE #FinishedRisk")
+    rdm_cur.execute("CREATE TABLE #FinishedRisk (ID BIGINT NOT NULL PRIMARY KEY)")
+    for offset in range(0, len(numbers), 800):
+        chunk = numbers[offset:offset + 800]
+        values = ",".join(f"({number})" for number in chunk)
+        rdm_cur.execute(f"INSERT INTO #FinishedRisk (ID) VALUES {values}")
+    return True
+
+
+def _iter_risk_event_losses(rdm_cur, loss_level, rdm_analysis_id, perspective, finished_ids=None):
+    """Yield one risk's event losses at a time, ordered by risk id.
+
+    Account rows are ordered by ACCGRPID, policy rows by policy id, and
+    location rows by location id. The caller keeps only the portfolio ELT
+    and the risk that was just yielded. finished_ids are not read again.
+    """
+    table = _LOSS_LEVEL_TABLE.get(loss_level)
+    if table is None:
+        raise RuntimeError(f"Loss level {loss_level} does not have an RDM loss table.")
+    finished_ids = {str(entity_id).strip() for entity_id in (finished_ids or ())}
+    skip_sql = _stage_finished_ids(rdm_cur, finished_ids) and loss_level not in ("State", "County")
+    if loss_level == "State":
+        sql = f"""
+            SELECT RTRIM(STATE), EVENTID, SUM(PERSPVALUE)
+            FROM {table}
+            WHERE ANLSID = ? AND RTRIM(PERSPCODE) = ?
+              AND STATE IS NOT NULL AND RTRIM(STATE) <> ''
+            GROUP BY RTRIM(STATE), EVENTID
+            ORDER BY RTRIM(STATE), EVENTID
+        """
+    elif loss_level == "County":
+        sql = f"""
+            SELECT RTRIM(STATE) + '-' + CONVERT(varchar(20), COUNTYNUM), EVENTID, SUM(PERSPVALUE)
+            FROM {table}
+            WHERE ANLSID = ? AND RTRIM(PERSPCODE) = ? AND COUNTYNUM IS NOT NULL
+            GROUP BY RTRIM(STATE), COUNTYNUM, EVENTID
+            ORDER BY RTRIM(STATE), COUNTYNUM, EVENTID
+        """
+    else:
+        sql = f"""
+            SELECT CONVERT(varchar(40), ID), EVENTID, SUM(PERSPVALUE)
+            FROM {table}
+            WHERE ANLSID = ? AND RTRIM(PERSPCODE) = ?
+        """
+        if skip_sql:
+            sql += f" AND NOT EXISTS (SELECT 1 FROM #FinishedRisk AS f WHERE f.ID = {table}.ID)"
+        sql += " GROUP BY ID, EVENTID ORDER BY ID, EVENTID"
+    rdm_cur.execute(sql, rdm_analysis_id, perspective)
+    current_id = None
+    losses = {}
+    row = rdm_cur.fetchone()
+    while row is not None:
+        entity_id = str(row[0]).strip()
+        if current_id is None:
+            current_id = entity_id
+        elif entity_id != current_id:
+            if current_id not in finished_ids:
+                yield current_id, losses
+            losses = {}
+            current_id = entity_id
+        losses[int(row[1])] = float(row[2] or 0)
+        row = rdm_cur.fetchone()
+    if current_id is not None and current_id not in finished_ids:
+        yield current_id, losses
+
+
 def _entity_event_losses(rdm_cur, loss_level, rdm_analysis_id, perspective, limit=None):
     """Event losses for each loss-level id, keyed by entity id.
 
@@ -1822,6 +2118,83 @@ def _entity_event_losses(rdm_cur, loss_level, rdm_analysis_id, perspective, limi
     for entity_id, event_id, loss in rdm_cur.fetchall():
         by_entity.setdefault(str(entity_id), {})[int(event_id)] = float(loss or 0)
     return by_entity
+
+
+def _check_message(label, actual, expected, actual_name, expected_name):
+    """Say whether a location total matches the portfolio figure."""
+    gap = actual - expected
+    if abs(expected) <= 1.0:
+        ok = abs(gap) <= 1.0
+        share = ""
+    else:
+        ok = abs(gap) <= max(1.0, abs(expected) * 1e-4)
+        share = f" ({gap / expected * 100:.2f}%)"
+    status = "Pass" if ok else "Fail"
+    return (
+        f"Check {label}: sum of {actual_name} {actual:,.2f} vs {expected_name} "
+        f"{expected:,.2f}. Difference {gap:,.2f}{share}. {status}."
+    )
+
+
+def _result_check_messages(stored, periods):
+    """Compare location DIFF totals with the portfolio PML and AAL."""
+    portfolio = stored["EXCL"].get("PORTFOLIO") or stored["DIFF"].get("PORTFOLIO") or {}
+    metrics = stored.get("METRICS") or {}
+    portfolio_aal = float((metrics.get("PORTFOLIO") or {}).get("excl_aal") or 0.0)
+    locations = [entity for entity in stored["DIFF"] if entity != "PORTFOLIO"]
+    aal_sum = 0.0
+    for entity_id in locations:
+        value = (metrics.get(entity_id) or {}).get("diff_aal")
+        if value is not None:
+            aal_sum += float(value)
+    messages = [_check_message("AAL", aal_sum, portfolio_aal, "location DIFF AAL", "portfolio AAL")]
+    for period in periods:
+        diff_sum = sum(float(stored["DIFF"][entity].get(period, 0.0)) for entity in locations)
+        portfolio_loss = float(portfolio.get(period, 0.0))
+        messages.append(_check_message(
+            f"1/{period}", diff_sum, portfolio_loss, "location DIFF", "portfolio PML"))
+    return messages
+
+
+def _log_result_checks(analysis_id, run_id):
+    """Write the DIFF and AAL reconciliation to the analysis log."""
+    stored, periods = _read_result_curves(analysis_id)
+    locations = sum(1 for entity in stored["DIFF"] if entity != "PORTFOLIO")
+    if not locations:
+        return
+    for message in _result_check_messages(stored, periods):
+        _log_analysis_time(analysis_id, run_id, None, locations, locations, message)
+
+
+def _record_progress(cur, analysis_id, run_id, completed, total, message):
+    """Store how many risks are done so the analysis list can draw the pie."""
+    cur.execute(
+        """
+        EXEC dbo.usp_AnalysisUserLog_Add
+            @AnalysisID=?, @AnalysisRunID=?, @ElapsedSeconds=?,
+            @LocationsCompleted=?, @LocationsTotal=?, @Message=?
+        """,
+        analysis_id, run_id, None, completed, total, (message or "")[:500])
+
+
+def _mark_run_failed(run_id, exc):
+    if not run_id:
+        return
+    try:
+        conn = _open_dpo()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                EXEC dbo.usp_AnalysisRun_SetStatus
+                    @AnalysisRunID=?, @RunStatus=?, @ErrorMessage=?
+                """,
+                int(run_id), "Failed", str(exc)[:4000])
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def _log_analysis_time(analysis_id, run_id, elapsed_seconds, completed, total, message):
@@ -1918,6 +2291,8 @@ def _complete_remaining_locations(analysis, batch_size=25):
             rdm_cur, row["loss_level"], analysis["rdm_analysis_id"], row["loss_perspective"])
         event_ids, elt_mean, elt_std, elt_exposure, elt_rate = _portfolio_elt(
             rdm_cur, analysis["rdm_analysis_id"], row["loss_perspective"], analysis["portfolio_id"])
+        ceilings = rdm_analysis.pml_from_elt(
+            elt_mean, elt_std, elt_exposure, elt_rate, points)
         table = _LOSS_LEVEL_TABLE[row["loss_level"]]
         rdm_cur.execute(
             f"""
@@ -1935,6 +2310,8 @@ def _complete_remaining_locations(analysis, batch_size=25):
         dpo = _open_dpo()
         try:
             dpo_cur = dpo.cursor()
+            _ensure_excl_metric_table(dpo_cur)
+            dpo.commit()
             completed_now = 0
             for offset in range(0, len(remaining), batch_size):
                 batch = remaining[offset:offset + batch_size]
@@ -1942,9 +2319,10 @@ def _complete_remaining_locations(analysis, batch_size=25):
                     rdm_cur, row["loss_level"], analysis["rdm_analysis_id"],
                     row["loss_perspective"], batch)
                 for entity_id in batch:
-                    excl_values = _excluding_curve(
+                    excl_values, excl_aal, excl_stddev = _excluding_curve(
                         event_ids, elt_mean, elt_std, elt_exposure, elt_rate,
-                        by_entity.get(entity_id, {}), points)
+                        by_entity.get(entity_id, {}), points, ceilings)
+                    _insert_excl_metric(dpo_cur, run_id, entity_id, excl_aal, excl_stddev)
                     for period, excl_value in zip(points, excl_values):
                         if excl_value != excl_value:
                             raise RuntimeError(
@@ -1994,20 +2372,14 @@ def _complete_remaining_locations(analysis, batch_size=25):
         rdm.close()
 
 
-def _excluding_curve(event_ids, mean, std, exposure, rate, entity_losses, points):
-    """Subtract one entity's event losses from the portfolio ELT and rebuild the curve."""
-    removed = np.zeros(mean.shape, dtype=float)
-    index = {int(event_id): i for i, event_id in enumerate(event_ids)}
-    for event_id, loss in entity_losses.items():
-        slot = index.get(int(event_id))
-        if slot is not None:
-            removed[slot] = loss
-    remaining = rdm_analysis.subtract_elt(mean, removed)
-    scale = np.ones(mean.shape, dtype=float)
-    positive = mean > 0
-    scale[positive] = remaining[positive] / mean[positive]
-    scale[~positive] = 0.0
-    return rdm_analysis.pml_from_elt(remaining, std * scale, exposure * scale, rate, points)
+def _excluding_curve(event_ids, mean, std, exposure, rate, entity_losses, points, ceilings=None):
+    """Subtract one entity's event losses from the portfolio ELT and rebuild the curve.
+
+    Also returns the excluding AAL and standard deviation. AAL is the event
+    rate times the remaining perspvalue.
+    """
+    return rdm_analysis.excluding_pml(
+        event_ids, mean, std, exposure, rate, entity_losses, points, ceilings)
 
 
 # RDM peril code -> (loccvg PERIL, EDM detail table). The physical tables are
@@ -2339,6 +2711,57 @@ def _location_exposure(analysis_id):
         conn.close()
 
 
+def _result_file_metrics(_analysis, run_id):
+    """AAL and standard deviation stored with each excluding and difference curve.
+
+    Excluding AAL and standard deviation were calculated from the remaining
+    event losses while that risk's curve was built. Every difference metric,
+    including AAL and standard deviation, is the portfolio value minus the
+    excluding value.
+    """
+    metrics = _stored_portfolio_metrics(run_id)
+    portfolio = metrics["PORTFOLIO"]
+    portfolio_aal = float(portfolio["excl_aal"])
+    portfolio_stddev = float(portfolio["excl_stddev"])
+    for entity_id, (aal, standard_deviation) in _stored_excl_metrics(run_id).items():
+        if entity_id == "PORTFOLIO":
+            continue
+        metrics[entity_id] = {
+            "excl_aal": float(aal),
+            "excl_stddev": float(standard_deviation),
+            "diff_aal": portfolio_aal - float(aal),
+            "diff_stddev": portfolio_stddev - float(standard_deviation),
+        }
+    return metrics
+
+
+def _stored_portfolio_metrics(run_id):
+    """Portfolio AAL and standard deviation already saved on the run."""
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT PortfolioAal, PortfolioStandardDeviation
+            FROM dbo.tAnalysisRun
+            WHERE AnalysisRunID = ?
+            """,
+            run_id)
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    aal = 0.0 if row is None or row[0] is None else float(row[0])
+    standard_deviation = 0.0 if row is None or row[1] is None else float(row[1])
+    return {
+        "PORTFOLIO": {
+            "excl_aal": aal,
+            "excl_stddev": standard_deviation,
+            "diff_aal": 0.0,
+            "diff_stddev": 0.0,
+        }
+    }
+
+
 def _publish_result_file(analysis_id, run_id):
     """Write the wide EXCL and DIFF curves for a run under App_Data."""
     conn = _open_dpo()
@@ -2356,12 +2779,133 @@ def _publish_result_file(analysis_id, run_id):
         conn.close()
     if rows:
         analysis = _analysis_header(analysis_id)
-        metrics = _result_metrics(analysis, run_id)
         results_store.write_results(
-            *_result_parts(analysis), results_store.wide_frame(rows, metrics))
+            *_result_parts(analysis),
+            results_store.wide_frame(rows, _result_file_metrics(analysis, run_id)))
+        _log_result_checks(analysis_id, run_id)
 
 
-def _write_portfolio_results(analysis, entity_limit=None):
+def _resumable_run(cur, settings_id):
+    """Latest unfinished run for these settings, if risks can be continued."""
+    cur.execute(
+        """
+        SELECT TOP 1 AnalysisRunID, RunStatus, EntityCount
+        FROM dbo.tAnalysisRun
+        WHERE AnalysisSettingsID = ? AND RunStatus IN (N'Running', N'Failed')
+        ORDER BY AnalysisRunID DESC
+        """,
+        settings_id)
+    found = cur.fetchone()
+    if not found:
+        return None
+    return int(found[0]), (found[1] or "").strip(), int(found[2] or 0)
+
+
+def _stored_portfolio_points(cur, run_id, points):
+    """Portfolio losses already stored for this run, aligned to the EP points."""
+    cur.execute(
+        """
+        SELECT ReturnPeriod, PmlValue
+        FROM dbo.tPmlResult
+        WHERE AnalysisRunID = ? AND ResultType = N'EXCL' AND EntityID = N'PORTFOLIO'
+        """,
+        run_id)
+    stored = {int(period): float(value) for period, value in cur.fetchall()}
+    if any(point not in stored for point in points):
+        return None
+    return [stored[point] for point in points]
+
+
+def _finished_and_partial(cur, run_id, point_count):
+    """Risks with a full excluding and difference curve, and risks left incomplete."""
+    cur.execute(
+        """
+        SELECT EntityID, ResultType, COUNT(*)
+        FROM dbo.tPmlResult
+        WHERE AnalysisRunID = ? AND EntityID <> N'PORTFOLIO'
+        GROUP BY EntityID, ResultType
+        """,
+        run_id)
+    counts = {}
+    for entity_id, result_type, count in cur.fetchall():
+        counts.setdefault(str(entity_id).strip(), {})[str(result_type).strip()] = int(count)
+    finished = set()
+    partial = []
+    for entity_id, by_type in counts.items():
+        if by_type.get("EXCL") == point_count and by_type.get("DIFF") == point_count:
+            finished.add(entity_id)
+        else:
+            partial.append(entity_id)
+    return finished, partial
+
+
+def _ensure_excl_metric_table(cur):
+    """Per-risk excluding AAL and standard deviation, written as each curve is saved."""
+    cur.execute(
+        """
+        IF OBJECT_ID(N'dbo.tExclMetric', N'U') IS NULL
+        CREATE TABLE dbo.tExclMetric (
+            AnalysisRunID       INT            NOT NULL,
+            EntityID            NVARCHAR(255)  NOT NULL,
+            Aal                 FLOAT          NOT NULL,
+            StandardDeviation   FLOAT          NOT NULL,
+            CONSTRAINT PK_tExclMetric PRIMARY KEY CLUSTERED (AnalysisRunID, EntityID),
+            CONSTRAINT FK_tExclMetric_tAnalysisRun
+                FOREIGN KEY (AnalysisRunID) REFERENCES dbo.tAnalysisRun (AnalysisRunID)
+        )
+        """)
+
+
+def _insert_excl_metric(cur, run_id, entity_id, aal, stddev):
+    cur.execute(
+        """
+        INSERT INTO dbo.tExclMetric (AnalysisRunID, EntityID, Aal, StandardDeviation)
+        VALUES (?, ?, ?, ?)
+        """,
+        int(run_id), str(entity_id), float(aal), float(stddev))
+
+
+def _stored_excl_metrics(run_id):
+    """Excluding AAL and standard deviation saved while each risk was calculated."""
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT OBJECT_ID(N'dbo.tExclMetric', N'U')")
+        if cur.fetchone()[0] is None:
+            return {}
+        cur.execute(
+            """
+            SELECT EntityID, Aal, StandardDeviation
+            FROM dbo.tExclMetric
+            WHERE AnalysisRunID = ?
+            """,
+            int(run_id))
+        return {
+            str(entity_id).strip(): (float(aal), float(stddev))
+            for entity_id, aal, stddev in cur.fetchall()
+        }
+    finally:
+        conn.close()
+
+
+def _delete_partial_results(cur, run_id, entity_ids):
+    _ensure_excl_metric_table(cur)
+    for entity_id in entity_ids:
+        cur.execute(
+            """
+            DELETE FROM dbo.tPmlResult
+            WHERE AnalysisRunID = ? AND EntityID = ?
+            """,
+            run_id, entity_id)
+        cur.execute(
+            """
+            DELETE FROM dbo.tExclMetric
+            WHERE AnalysisRunID = ? AND EntityID = ?
+            """,
+            run_id, entity_id)
+
+
+def _write_portfolio_results(analysis, _entity_limit=None):
     points, _custom, _defaults = _analysis_ep_points(analysis["id"])
     points = [point for point in points if point > 0][:15]
     if not points:
@@ -2372,47 +2916,98 @@ def _write_portfolio_results(analysis, entity_limit=None):
     rdm = _open_moodys(analysis["rdm_name"])
     dpo = None
     published = []
+    run_id = None
+    run_open = False
     try:
         dpo = _open_dpo()
         rdm_cur = rdm.cursor()
         dpo_cur = dpo.cursor()
+        _ensure_excl_metric_table(dpo_cur)
+        dpo.commit()
         for row in settings:
+            existing = _resumable_run(dpo_cur, row["id"])
+            if existing:
+                run_id, _status, entity_count = existing
+                run_open = True
+                dpo_cur.execute(
+                    "EXEC dbo.usp_AnalysisRun_SetStatus @AnalysisRunID=?, @RunStatus=?",
+                    run_id, "Running")
+                dpo.commit()
+            else:
+                dpo_cur.execute(
+                    """
+                    DECLARE @AnalysisRunID INT;
+                    EXEC dbo.usp_AnalysisRun_Create
+                        @AnalysisSettingsID=?, @AnalysisRunID=@AnalysisRunID OUTPUT;
+                    SELECT @AnalysisRunID;
+                    """,
+                    row["id"])
+                run_id = _first_value(dpo_cur)
+                run_open = True
+                entity_count = 0
+                dpo_cur.execute(
+                    "EXEC dbo.usp_AnalysisRun_SetStatus @AnalysisRunID=?, @RunStatus=?",
+                    run_id, "Running")
+                dpo.commit()
             exceedance, losses, aal, standard_deviation = _portfolio_curve(
                 rdm_cur, analysis["rdm_analysis_id"], row["loss_perspective"], analysis["portfolio_id"])
-            entity_count = _entity_count(
-                rdm_cur, row["loss_level"], analysis["rdm_analysis_id"], row["loss_perspective"])
-            values = rdm_analysis.portfolio_pml_from_portep(exceedance, losses, points)
-            dpo_cur.execute(
-                """
-                DECLARE @AnalysisRunID INT;
-                EXEC dbo.usp_AnalysisRun_Create
-                    @AnalysisSettingsID=?, @AnalysisRunID=@AnalysisRunID OUTPUT;
-                SELECT @AnalysisRunID;
-                """,
-                row["id"])
-            run_id = _first_value(dpo_cur)
-            dpo_cur.execute(
-                "EXEC dbo.usp_AnalysisRun_SetStatus @AnalysisRunID=?, @RunStatus=?",
-                run_id, "Running")
-            for result_type in ("EXCL", "DIFF"):
-                for period, value in zip(points, values):
-                    if value != value:  # NaN
-                        raise RuntimeError(f"No portfolio loss at return period {period}.")
-                    dpo_cur.execute(
-                        """
-                        EXEC dbo.usp_PmlResult_Insert
-                            @AnalysisRunID=?, @ResultType=?, @EntityID=?,
-                            @ReturnPeriod=?, @PmlValue=?
-                        """,
-                        run_id, result_type, "PORTFOLIO", int(period), float(value))
+            if not entity_count:
+                entity_count = _entity_count(
+                    rdm_cur, row["loss_level"], analysis["rdm_analysis_id"], row["loss_perspective"])
+            values = _stored_portfolio_points(dpo_cur, run_id, points)
+            if values is None:
+                values = rdm_analysis.portfolio_pml_from_portep(exceedance, losses, points)
+                dpo_cur.execute(
+                    """
+                    EXEC dbo.usp_AnalysisRun_SetStatus
+                        @AnalysisRunID=?, @RunStatus=?, @EntityCount=?
+                    """,
+                    run_id, "Running", entity_count)
+                _record_progress(
+                    dpo_cur, analysis["id"], run_id, 0, entity_count,
+                    f"Saving the portfolio curve for {entity_count} risks.")
+                dpo.commit()
+                for result_type in ("EXCL", "DIFF"):
+                    for period, value in zip(points, values):
+                        if value != value:  # NaN
+                            raise RuntimeError(f"No portfolio loss at return period {period}.")
+                        dpo_cur.execute(
+                            """
+                            EXEC dbo.usp_PmlResult_Insert
+                                @AnalysisRunID=?, @ResultType=?, @EntityID=?,
+                                @ReturnPeriod=?, @PmlValue=?
+                            """,
+                            run_id, result_type, "PORTFOLIO", int(period), float(value))
+                dpo.commit()
+            else:
+                dpo_cur.execute(
+                    """
+                    EXEC dbo.usp_AnalysisRun_SetStatus
+                        @AnalysisRunID=?, @RunStatus=?, @EntityCount=?
+                    """,
+                    run_id, "Running", entity_count)
+            finished, partial = _finished_and_partial(dpo_cur, run_id, len(points))
+            if partial:
+                _delete_partial_results(dpo_cur, run_id, partial)
+            completed = len(finished)
+            _record_progress(
+                dpo_cur, analysis["id"], run_id, completed, entity_count,
+                f"Completed {completed} of {entity_count} risks.")
+            dpo.commit()
             event_ids, elt_mean, elt_std, elt_exposure, elt_rate = _portfolio_elt(
                 rdm_cur, analysis["rdm_analysis_id"], row["loss_perspective"], analysis["portfolio_id"])
-            by_entity = _entity_event_losses(
-                rdm_cur, row["loss_level"], analysis["rdm_analysis_id"], row["loss_perspective"],
-                entity_limit)
-            for entity_id, entity_losses in by_entity.items():
-                excl_values = _excluding_curve(
-                    event_ids, elt_mean, elt_std, elt_exposure, elt_rate, entity_losses, points)
+            ceilings = rdm_analysis.pml_from_elt(
+                elt_mean, elt_std, elt_exposure, elt_rate, points)
+            _record_progress(
+                dpo_cur, analysis["id"], run_id, completed, entity_count,
+                f"Processing locations on {os.cpu_count() or 1} cores.")
+            dpo.commit()
+            logged_at = time.perf_counter()
+            workers = os.cpu_count() or 1
+
+            def _store_curve(entity_id, excl_values, excl_aal, excl_stddev):
+                nonlocal completed, logged_at
+                _insert_excl_metric(dpo_cur, run_id, entity_id, excl_aal, excl_stddev)
                 for period, excl_value, portfolio_value in zip(points, excl_values, values):
                     if excl_value != excl_value:
                         raise RuntimeError(f"No excluding loss at return period {period} for {entity_id}.")
@@ -2431,6 +3026,34 @@ def _write_portfolio_results(analysis, entity_limit=None):
                             @ReturnPeriod=?, @PmlValue=?
                         """,
                         run_id, "DIFF", entity_id, int(period), diff_value)
+                completed += 1
+                if time.perf_counter() - logged_at >= 5:
+                    _record_progress(
+                        dpo_cur, analysis["id"], run_id, completed, entity_count,
+                        f"Completed {completed} of {entity_count} risks.")
+                    dpo.commit()
+                    logged_at = time.perf_counter()
+
+            pending = set()
+            with ProcessPoolExecutor(
+                    max_workers=workers,
+                    initializer=exclude_pool.init_worker,
+                    initargs=(event_ids, elt_mean, elt_std, elt_exposure, elt_rate, points, ceilings)) as pool:
+                for entity_id, risk_elt in _iter_risk_event_losses(
+                        rdm_cur, row["loss_level"], analysis["rdm_analysis_id"],
+                        row["loss_perspective"], finished):
+                    pending.add(pool.submit(exclude_pool.exclude_risk, entity_id, risk_elt))
+                    del risk_elt
+                    if len(pending) >= workers:
+                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            finished_id, excl_values, excl_aal, excl_stddev = future.result()
+                            _store_curve(finished_id, excl_values, excl_aal, excl_stddev)
+                if pending:
+                    done, _pending = wait(pending)
+                    for future in done:
+                        finished_id, excl_values, excl_aal, excl_stddev = future.result()
+                        _store_curve(finished_id, excl_values, excl_aal, excl_stddev)
             dpo_cur.execute(
                 """
                 EXEC dbo.usp_AnalysisRun_SetStatus
@@ -2438,16 +3061,40 @@ def _write_portfolio_results(analysis, entity_limit=None):
                     @PortfolioAal=?, @PortfolioStandardDeviation=?
                 """,
                 run_id, "Complete", entity_count, aal, standard_deviation)
+            _record_progress(
+                dpo_cur, analysis["id"], run_id, completed, entity_count,
+                f"Completed {completed} of {entity_count} risks.")
+            dpo.commit()
             published.append(run_id)
-        dpo.commit()
+            run_open = False
         for finished_run in published:
             _publish_result_file(analysis["id"], finished_run)
         if any(row["loss_level"] == "Location" for row in settings):
             _save_location_exposure(analysis)
+    except Exception as exc:
+        if dpo is not None:
+            try:
+                dpo.rollback()
+            except Exception:
+                pass
+        if run_open:
+            _mark_run_failed(run_id, exc)
+        raise
     finally:
         rdm.close()
         if dpo is not None:
             dpo.close()
+
+
+def _run_analysis_job(analysis):
+    try:
+        _write_portfolio_results(analysis)
+    except Exception as exc:
+        print(f"Analysis {analysis['id']} stopped: {exc}", flush=True)
+    finally:
+        with _RUN_LOCK:
+            _RUNNING_ANALYSES.discard(analysis["id"])
+            _RUN_STARTED.pop(analysis["id"], None)
 
 
 @app.route("/analysis/<int:analysis_id>/portfolio-results", methods=["POST"])
@@ -2456,12 +3103,32 @@ def write_portfolio_results(analysis_id):
         analysis = _analysis_header(analysis_id)
         if not analysis:
             return redirect(url_for("new_analysis", error="Analysis was not found."))
-        _write_portfolio_results(analysis)
+        points, _custom, _defaults = _analysis_ep_points(analysis_id)
+        if not [point for point in points if point > 0]:
+            return redirect(url_for(
+                "analysis_settings", analysis_id=analysis_id,
+                error="Save at least one EP point before writing portfolio results."))
+        if not _analysis_settings_rows(analysis_id):
+            return redirect(url_for(
+                "analysis_settings", analysis_id=analysis_id,
+                error="Save a loss level and perspective before writing portfolio results."))
+        with _RUN_LOCK:
+            already = analysis_id in _RUNNING_ANALYSES
+            if not already:
+                _RUNNING_ANALYSES.add(analysis_id)
+                _RUN_STARTED[analysis_id] = time.time()
+        if not already:
+            threading.Thread(
+                target=_run_analysis_job, args=(analysis,),
+                name=f"analysis-{analysis_id}", daemon=False).start()
     except Exception as exc:
+        with _RUN_LOCK:
+            _RUNNING_ANALYSES.discard(analysis_id)
+            _RUN_STARTED.pop(analysis_id, None)
         return redirect(url_for(
             "analysis_settings", analysis_id=analysis_id,
             error=f"Could not write portfolio EP points: {exc}"))
-    return redirect(url_for("analysis_settings", analysis_id=analysis_id, saved="portfolio"))
+    return redirect(url_for("analysis_list"))
 
 
 def _analysis_form_values():
@@ -2484,6 +3151,211 @@ def _analysis_form_values():
     peril = _ungrouped_peril(rdm_name, rdm_id)
     return (name, description, client, edm_name, portfolio_id, rdm_name,
             rdm_id, rdm_analysis_name, peril)
+
+
+def _format_remaining(seconds):
+    """Short remaining-time label from a processing-rate estimate."""
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return "est. under 1 min"
+    minutes = (seconds + 30) // 60
+    if minutes < 60:
+        return f"est. {minutes} min"
+    hours, mins = divmod(minutes, 60)
+    if mins == 0:
+        return f"est. {hours} hr"
+    return f"est. {hours} hr {mins} min"
+
+
+def _eta_text(completed, total, latest_at, processing_started_at, processing_started_count,
+              first_progress_at, first_progress_count):
+    """Remaining time from location processing only, after 10% are done.
+
+    The clock starts at the latest "Processing locations" log. Risks already
+    finished before that log are not part of the rate, so a resumed run does
+    not count time the application was stopped.
+    """
+    completed = int(completed or 0)
+    total = int(total or 0)
+    if total <= 0 or completed <= 0 or latest_at is None or completed >= total:
+        return ""
+    if completed / total < 0.10:
+        return ""
+    if processing_started_at is not None:
+        elapsed = (latest_at - processing_started_at).total_seconds()
+        done = completed - int(processing_started_count or 0)
+    elif first_progress_at is not None and completed > int(first_progress_count or 0):
+        elapsed = (latest_at - first_progress_at).total_seconds()
+        done = completed - int(first_progress_count or 0)
+    else:
+        return ""
+    if elapsed <= 0 or done <= 0:
+        return ""
+    return _format_remaining((total - completed) * elapsed / done)
+
+
+def _progress_view(status, completed, total, eta=""):
+    """Pie inputs for one analysis job. Progress is a percent from 0 to 100."""
+    status = status or ""
+    if status == "Complete" and completed is None:
+        completed = total
+    completed = int(completed or 0)
+    total = int(total or 0)
+    stats = f"{completed:,} / {total:,}" if total > 0 else ""
+    if status == "Complete" and total <= 0:
+        progress = 100
+        label = "Complete"
+    elif status in ("Running", "Queued"):
+        actual = int(round(min(100.0, completed / total * 100.0))) if total > 0 else 0
+        progress = max(3, actual)
+        label = "running"
+    elif total <= 0 and status == "Failed":
+        progress = 0
+        label = "Failed"
+    elif total <= 0:
+        progress = 0
+        label = "Not started"
+    else:
+        progress = int(round(min(100.0, completed / total * 100.0)))
+        label = stats
+        if status == "Failed":
+            label = f"Failed {label}"
+    return {
+        "run_status": status,
+        "completed": completed,
+        "total": total,
+        "progress": progress,
+        "progress_label": label,
+        "progress_stats": stats if status in ("Running", "Queued") else "",
+        "eta": eta if status in ("Running", "Queued") else "",
+        "running": status in ("Running", "Queued"),
+    }
+
+
+def _analysis_progress():
+    """Latest run and its newest completed-risk count, keyed by analysis id."""
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            WITH latest_run AS (
+                SELECT
+                    s.AnalysisID,
+                    r.AnalysisRunID,
+                    r.RunStatus,
+                    r.EntityCount,
+                    r.CreatedAt,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.AnalysisID
+                        ORDER BY r.AnalysisRunID DESC
+                    ) AS rn
+                FROM dbo.tAnalysisRun AS r
+                INNER JOIN dbo.tAnalysisSettings AS s
+                    ON s.AnalysisSettingsID = r.AnalysisSettingsID
+            ),
+            latest_log AS (
+                SELECT
+                    AnalysisRunID,
+                    LocationsCompleted,
+                    LocationsTotal,
+                    LoggedAt,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY AnalysisRunID
+                        ORDER BY AnalysisUserLogID DESC
+                    ) AS rn
+                FROM dbo.tAnalysisUserLog
+                WHERE AnalysisRunID IS NOT NULL
+                  AND LocationsTotal IS NOT NULL
+            ),
+            processing_start AS (
+                SELECT
+                    AnalysisRunID,
+                    LoggedAt,
+                    LocationsCompleted,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY AnalysisRunID
+                        ORDER BY AnalysisUserLogID DESC
+                    ) AS rn
+                FROM dbo.tAnalysisUserLog
+                WHERE Message LIKE N'Processing locations%'
+            ),
+            first_progress AS (
+                SELECT
+                    AnalysisRunID,
+                    LoggedAt,
+                    LocationsCompleted,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY AnalysisRunID
+                        ORDER BY AnalysisUserLogID
+                    ) AS rn
+                FROM dbo.tAnalysisUserLog
+                WHERE LocationsCompleted > 0
+            )
+            SELECT
+                lr.AnalysisID,
+                lr.RunStatus,
+                lr.EntityCount,
+                lr.CreatedAt,
+                ll.LocationsCompleted,
+                ll.LocationsTotal,
+                ll.LoggedAt,
+                ps.LoggedAt,
+                ps.LocationsCompleted,
+                fp.LoggedAt,
+                fp.LocationsCompleted
+            FROM latest_run AS lr
+            LEFT JOIN latest_log AS ll
+                ON ll.AnalysisRunID = lr.AnalysisRunID AND ll.rn = 1
+            LEFT JOIN processing_start AS ps
+                ON ps.AnalysisRunID = lr.AnalysisRunID AND ps.rn = 1
+            LEFT JOIN first_progress AS fp
+                ON fp.AnalysisRunID = lr.AnalysisRunID AND fp.rn = 1
+            WHERE lr.rn = 1
+            """)
+        jobs = {}
+        for (analysis_id, status, entity_count, created_at, completed, total,
+             latest_at, processing_started_at, processing_started_count,
+             first_progress_at, first_progress_count) in cur.fetchall():
+            status = (status or "").strip()
+            if total is None and status == "Complete":
+                total = entity_count
+            elif total is None:
+                total = entity_count
+            if completed is None and status == "Complete":
+                completed = total
+            elif completed is None:
+                completed = 0
+            eta = _eta_text(
+                completed, total, latest_at, processing_started_at, processing_started_count,
+                first_progress_at, first_progress_count)
+            jobs[int(analysis_id)] = _progress_view(status, completed, total, eta)
+            jobs[int(analysis_id)]["_created_at"] = created_at
+        with _RUN_LOCK:
+            started = dict(_RUN_STARTED)
+        for analysis_id, started_at in started.items():
+            current = jobs.get(analysis_id)
+            created_at = current.get("_created_at") if current else None
+            created_ts = None
+            if created_at is not None:
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                created_ts = created_at.timestamp()
+            newer_run = created_ts is not None and created_ts >= started_at
+            if current is None or (current["run_status"] != "Running" and not newer_run):
+                jobs[analysis_id] = _progress_view("Running", 0, 0)
+        for job in jobs.values():
+            job.pop("_created_at", None)
+        with _RUN_LOCK:
+            active = set(_RUNNING_ANALYSES)
+        for analysis_id, job in jobs.items():
+            total = int(job.get("total") or 0)
+            completed = int(job.get("completed") or 0)
+            unfinished = job.get("run_status") in ("Running", "Failed") and (total == 0 or completed < total)
+            job["can_resume"] = unfinished and analysis_id not in active
+        return jobs
+    finally:
+        conn.close()
 
 
 def _list_analyses():
@@ -2516,8 +3388,11 @@ def _list_analyses():
             WHERE r.RunStatus = 'Complete'
             """)
         performed = {int(r[0]) for r in cur.fetchall()}
+        progress = _analysis_progress()
         for row in rows:
             row["has_results"] = row["id"] in performed
+            row.update(progress.get(row["id"]) or _progress_view("", None, None))
+            row.setdefault("can_resume", False)
         return rows
     finally:
         conn.close()
@@ -2539,6 +3414,18 @@ def analysis_list():
         "analysis_list.html", rows=rows, error=error,
         saved=request.args.get("saved"),
         deleted=request.args.get("deleted"))
+
+
+@app.route("/api/analysis-progress")
+def api_analysis_progress():
+    try:
+        jobs = [
+            {"id": analysis_id, **job}
+            for analysis_id, job in _analysis_progress().items()
+        ]
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"jobs": jobs})
 
 
 @app.route("/analysis/<int:analysis_id>/delete", methods=["POST"])
@@ -2691,7 +3578,7 @@ def admin_page():
         display_ranges = _display_ranges()
         range_error = None
     except Exception as exc:
-        display_ranges = {"dtc": [], "elevation": []}
+        display_ranges = {"dtc": [], "elevation": [], "year_built": list(_YEAR_BUILT_DEFAULTS)}
         range_error = f"Could not read EDM ranges: {exc}"
     return render_template(
         "admin.html", settings=view, moodys=moodys_view,
@@ -2700,6 +3587,7 @@ def admin_page():
         ep_type=rdm_settings.load_ep_type(),
         dtc_ranges=_range_fields(display_ranges["dtc"]),
         elevation_ranges=_range_fields(display_ranges["elevation"]),
+        year_built_ranges=_year_built_fields(display_ranges.get("year_built") or _YEAR_BUILT_DEFAULTS),
         ranges_saved=rdm_settings.load_ranges(),
         range_error=range_error,
         flash=request.args.get("flash"), flash_kind=request.args.get("kind", "success"))
@@ -2773,12 +3661,13 @@ def admin_ep_type_save():
 @app.route("/admin/ranges", methods=["POST"])
 def admin_ranges_save():
     kind = request.form.get("kind", "").strip()
-    panel = "dtc" if kind == "dtc" else "elevation"
+    panel = {"dtc": "dtc", "elevation": "elevation", "year_built": "year"}.get(kind, "dtc")
     try:
-        rdm_settings.save_ranges(kind, _parse_range_form(request.form))
+        bands = _parse_year_built_form(request.form) if kind == "year_built" else _parse_range_form(request.form)
+        rdm_settings.save_ranges(kind, bands)
     except ValueError as exc:
         return redirect(url_for("admin_page", flash=str(exc), kind="error", panel="range", range=panel))
-    label = "DTC" if kind == "dtc" else "Elevation"
+    label = {"dtc": "DTC", "elevation": "Elevation", "year_built": "Year built"}.get(kind, "Range")
     return redirect(url_for(
         "admin_page", kind="success", panel="range", range=panel,
         flash=f"{label} ranges saved. Exhibits use these bands."))

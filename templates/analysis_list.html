@@ -27,6 +27,7 @@
         <th>RDM analysis</th>
         <th>Peril</th>
         <th>Created</th>
+        <th>Status</th>
         <th>Actions</th>
       </tr>
     </thead>
@@ -42,7 +43,20 @@
         <td>{{ row.rdm_analysis_name }}</td>
         <td>{{ row.peril }}</td>
         <td>{{ row.created_at }}</td>
+        <td>
+          <div class="status-cell" data-progress="{{ row.id }}"{% if row.running %} data-running="1"{% endif %}>
+            <span class="status-pie{% if row.run_status == 'Failed' %} failed{% endif %}" style="--progress: {{ row.progress }}" role="img" aria-label="{{ row.progress_label }} {{ row.progress_stats|default('') }}"></span>
+            <span class="status-copy">
+              <span class="status-label">{{ row.progress_label }}</span>
+              {% if row.progress_stats|default('') %}<span class="status-stats">{{ row.progress_stats }}</span>{% endif %}
+              {% if row.eta|default('') %}<span class="status-eta">{{ row.eta }}</span>{% endif %}
+            </span>
+          </div>
+        </td>
         <td class="list-actions">
+          <form method="post" action="{{ url_for('write_portfolio_results', analysis_id=row.id) }}" class="resume-form" data-resume="{{ row.id }}"{% if not row.can_resume %} hidden{% endif %}>
+            <button type="submit" class="primary-button">Resume</button>
+          </form>
           <a class="secondary-button" href="{{ url_for('edit_analysis', analysis_id=row.id) }}">Edit</a>
           <a class="secondary-button" href="{{ url_for('analysis_settings', analysis_id=row.id) }}">Settings</a>
           {% if row.has_results %}
@@ -54,7 +68,7 @@
         </td>
       </tr>
       {% else %}
-      <tr class="empty-row"><td colspan="7">No analyses saved yet.</td></tr>
+      <tr class="empty-row"><td colspan="8">No analyses saved yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -74,6 +88,53 @@
       row.hidden = q && row.getAttribute('data-search').toLowerCase().indexOf(q) < 0;
     });
   });
+  function paintJob(job) {
+    var cell = document.querySelector('.status-cell[data-progress="' + job.id + '"]');
+    if (!cell) return;
+    var pie = cell.querySelector('.status-pie');
+    var label = cell.querySelector('.status-label');
+    var stats = cell.querySelector('.status-stats');
+    var eta = cell.querySelector('.status-eta');
+    if (pie) {
+      pie.style.setProperty('--progress', job.progress);
+      pie.classList.toggle('failed', job.run_status === 'Failed');
+      pie.setAttribute('aria-label', (job.progress_label + ' ' + (job.progress_stats || '') + ' ' + (job.eta || '')).trim());
+    }
+    if (label) label.textContent = job.progress_label;
+    var copy = cell.querySelector('.status-copy');
+    function setLine(node, className, text) {
+      if (text) {
+        if (!node) {
+          node = document.createElement('span');
+          node.className = className;
+          if (copy) copy.appendChild(node);
+        }
+        node.textContent = text;
+        return node;
+      }
+      if (node) node.remove();
+      return null;
+    }
+    stats = setLine(stats, 'status-stats', job.progress_stats || '');
+    eta = setLine(eta, 'status-eta', job.eta || '');
+    if (job.running) cell.setAttribute('data-running', '1');
+    else cell.removeAttribute('data-running');
+    var resume = document.querySelector('.resume-form[data-resume="' + job.id + '"]');
+    if (resume) resume.hidden = !job.can_resume;
+  }
+  function pollProgress() {
+    fetch('/api/analysis-progress')
+      .then(function (response) { return response.json(); })
+      .then(function (body) {
+        (body.jobs || []).forEach(paintJob);
+        if (!document.querySelector('.status-cell[data-running]')) window.clearInterval(timer);
+      })
+      .catch(function () {});
+  }
+  var timer = null;
+  if (document.querySelector('.status-cell[data-running]')) {
+    timer = window.setInterval(pollProgress, 5000);
+  }
 })();
 </script>
 {% endblock %}

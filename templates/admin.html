@@ -93,7 +93,7 @@
       <div class="button-row">
         <button type="submit" class="primary-button">Save</button>
       </div>
-      <p class="field-help">The next analysis run reads the portfolio curve from the selected type. AAL and standard deviation stay on the aggregate stats row, EPTYPE 0.</p>
+      <p class="field-help">This choice applies only to the return-period points. AAL and standard deviation come from rdm_portstats for the analysis and perspective.</p>
     </form>
   </div>
 
@@ -147,11 +147,12 @@
 
   <div id="admin-tab-range" class="admin-tab-panel">
     <h2>Set Range</h2>
-    <p class="muted">Exhibits group distance to coast and elevation into these bands. The stored location value is not shown.</p>
+    <p class="muted">Exhibits group distance to coast, elevation, and year built into these bands. The stored location value is not shown.</p>
     {% if range_error %}<div class="alert alert-error">{{ range_error }}</div>{% endif %}
     <div class="admin-subtabs" data-group="range" role="tablist" aria-label="Range fields">
       <button type="button" class="active" data-subtab="dtc">DTC</button>
       <button type="button" data-subtab="elevation">Elevation</button>
+      <button type="button" data-subtab="year">Year Built</button>
     </div>
     <div id="sub-dtc" class="admin-subpanel active" data-group="range">
       <form class="admin-edit-card" method="post" action="{{ url_for('admin_ranges_save') }}">
@@ -196,6 +197,35 @@
         </div>
         <p class="field-help">
           {% if ranges_saved.elevation %}These are the saved elevation bands, in feet.{% else %}Five equal bands from the minimum and maximum elevation in the EDM, in feet. Unknown elevations of -999 are left out of the default. Save to keep any edits.{% endif %}
+        </p>
+      </form>
+    </div>
+    <div id="sub-year" class="admin-subpanel" data-group="range">
+      <form class="admin-edit-card" method="post" action="{{ url_for('admin_ranges_save') }}">
+        <input type="hidden" name="kind" value="year_built">
+        <table class="range-grid">
+          <thead><tr><th>Range</th><th>From</th><th>To</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Unknown</td>
+              <td>0</td>
+              <td>0</td>
+            </tr>
+            {% for band in year_built_ranges %}
+            <tr>
+              <td><input class="range-label" name="range_label" type="text" value="{{ band.label }}" required aria-label="Year built range {{ loop.index }} name"></td>
+              <td><input name="range_from" type="number" step="1" value="{{ band.start }}" aria-label="Year built range {{ loop.index }} from"></td>
+              <td><input name="range_to" type="number" step="1" value="{{ band.end }}" aria-label="Year built range {{ loop.index }} to"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="button-row">
+          <button type="submit" class="primary-button">Save year built ranges</button>
+        </div>
+        <p class="field-help">
+          A year built of 0 is Unknown. Leave From blank on the first band for every earlier year, and To blank on the last band for every later year.
+          {% if ranges_saved.year_built %}These are the saved year-built bands.{% else %}These are the default year-built bands. Save to keep any edits.{% endif %}
         </p>
       </form>
     </div>

@@ -42,8 +42,10 @@
     <label for="engine-version">Engine version</label>
     <input id="engine-version" readonly>
 
-    <label for="edm-name">EDM name</label>
-    <input id="edm-name" name="edm_name" readonly>
+    <label for="edm-name">EDM database</label>
+    <select id="edm-name" name="edm_name">
+      <option value="">Loading EDM databases</option>
+    </select>
 
     <label for="portfolio-id">Portfolio ID</label>
     <input id="portfolio-id" name="portfolio_id" readonly>
@@ -53,14 +55,14 @@
   </div>
   <input type="hidden" name="rdm_analysis_id" id="rdm-analysis-id">
   <input type="hidden" name="rdm_analysis_name" id="rdm-analysis-name">
-  <p class="field-help">Analysis name, description, and client are entered here. The client short name filters the RDM list. Show All DB lists every RDM. Engine version, EDM name, portfolio, and peril are copied from the selected RDM analysis.</p>
+  <p class="field-help">Analysis name, description, and client are entered here. The client short name filters the RDM list. Show All DB lists every RDM. The EDM list is every database with EDM in the name. Selecting an RDM analysis fills engine version, the matching EDM, portfolio, and peril.</p>
   <div class="button-row">
     <button type="submit" class="primary-button" id="create-analysis">Next</button>
   </div>
 </form>
 <aside class="card summary-panel" id="port-summary" aria-live="polite">
   <h2>Portfolio summary</h2>
-  <p class="field-help">AAL and standard deviation are the aggregate pure premium and total standard deviation from rdm_portstats (EPTYPE 0).</p>
+  <p class="field-help">AAL and standard deviation are pure premium and total standard deviation from rdm_portstats for this analysis and perspective.</p>
   <p class="muted" id="port-summary-status">Select an RDM analysis.</p>
   <div id="port-summary-line" class="summary-line" hidden></div>
 </aside>

@@ -181,25 +181,62 @@ def _stored_bands(value):
     return bands
 
 
+def _stored_year(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stored_year_bands(value):
+    """Five named year-built bands. A missing or invalid list means the default is still in use."""
+    if not isinstance(value, list) or len(value) != 5:
+        return None
+    bands = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            return None
+        label = str(item[0] or "").strip()
+        if not label:
+            return None
+        start = None if item[1] is None else _stored_year(item[1])
+        end = None if item[2] is None else _stored_year(item[2])
+        if item[1] is not None and start is None:
+            return None
+        if item[2] is not None and end is None:
+            return None
+        bands.append((label, start, end))
+    return bands
+
+
 def load_ranges():
-    """Saved DTC and elevation bands. None means the EDM default is still in use."""
+    """Saved exhibit bands. None means that field is still using its default."""
     raw = _read_file().get("Ranges") or {}
     return {
         "dtc": _stored_bands(raw.get("Dtc")),
         "elevation": _stored_bands(raw.get("Elevation")),
+        "year_built": _stored_year_bands(raw.get("YearBuilt")),
     }
 
 
 def save_ranges(kind, bands):
-    key = {"dtc": "Dtc", "elevation": "Elevation"}.get(kind)
+    key = {"dtc": "Dtc", "elevation": "Elevation", "year_built": "YearBuilt"}.get(kind)
     if key is None:
-        raise ValueError("Choose DTC or Elevation.")
+        raise ValueError("Choose DTC, Elevation, or Year built.")
     if len(bands) != 5:
         raise ValueError("Enter five ranges.")
     with _FILE_LOCK:
         raw = _read_file()
         stored = raw.get("Ranges") or {}
-        stored[key] = [[float(start), float(end)] for start, end in bands]
+        if kind == "year_built":
+            stored[key] = [
+                [label, start, end]
+                for label, start, end in bands
+            ]
+        else:
+            stored[key] = [[float(start), float(end)] for start, end in bands]
         raw["Ranges"] = stored
         _write_file(raw)
 

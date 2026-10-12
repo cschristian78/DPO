@@ -151,8 +151,63 @@
     }
   }
 
+  var edmSelect = document.getElementById('edm-name');
+  var edmNames = [];
+  var pendingEdm = edmSelect ? edmSelect.value : '';
+
+  function matchEdm(logical) {
+    if (!logical) return '';
+    var wanted = String(logical);
+    if (edmNames.indexOf(wanted) >= 0) return wanted;
+    var prefix = wanted.toLowerCase() + '_';
+    var matches = edmNames.filter(function (name) {
+      return name.toLowerCase().indexOf(prefix) === 0;
+    }).sort();
+    return matches.length ? matches[0] : '';
+  }
+
+  function fillEdmSelect(selected) {
+    if (!edmSelect) return;
+    edmSelect.innerHTML = '';
+    edmSelect.add(new Option(edmNames.length ? 'Select an EDM database' : 'No EDM databases found', ''));
+    edmNames.forEach(function (name) { edmSelect.add(new Option(name, name)); });
+    var chosen = matchEdm(selected) || (edmNames.indexOf(selected) >= 0 ? selected : '');
+    if (chosen) edmSelect.value = chosen;
+    else if (selected) {
+      edmSelect.add(new Option(selected, selected));
+      edmSelect.value = selected;
+    }
+  }
+
+  function selectEdm(logical) {
+    pendingEdm = logical || '';
+    if (!edmSelect) return;
+    if (!edmNames.length) return;
+    var chosen = matchEdm(pendingEdm);
+    edmSelect.value = chosen || '';
+  }
+
+  function loadEdmDatabases() {
+    if (!edmSelect) return;
+    fetch('/api/edm-databases')
+      .then(readJson)
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.body.error || 'Could not load EDM databases');
+        edmNames = res.body.databases || [];
+        var saved = keep && !userPicked ? pendingEdm : '';
+        fillEdmSelect(saved || pendingEdm);
+        if (!(keep && !userPicked) && pendingEdm) selectEdm(pendingEdm);
+      })
+      .catch(function (err) {
+        edmSelect.innerHTML = '';
+        edmSelect.add(new Option(err.message, ''));
+      });
+  }
+
   function fill(row) {
-    document.getElementById('edm-name').value = row ? (row.edmName || '') : '';
+    var logical = row ? (row.edmName || '') : '';
+    if (keep && !userPicked && edmSelect && edmSelect.value) logical = edmSelect.value;
+    selectEdm(logical);
     document.getElementById('portfolio-id').value = row && row.portfolioId != null ? row.portfolioId : '';
     document.getElementById('peril').value = row ? (row.peril || '') : '';
     document.getElementById('engine-version').value = row ? (row.engineVersion || '') : '';
@@ -254,4 +309,5 @@
     fill(row || null);
   });
   loadDatabases();
+  loadEdmDatabases();
 })();

@@ -94,9 +94,9 @@
   </tbody>
 </table>
 <form method="post" action="{{ url_for('write_portfolio_results', analysis_id=analysis.id) }}" class="button-row">
-  <button type="submit" class="primary-button">Run Analysis</button>
+  <button type="submit" class="primary-button">{% if can_resume %}Resume{% else %}Run Analysis{% endif %}</button>
 </form>
-<p class="field-help">Runs after the settings are saved. It stores the portfolio EP points, AAL, and standard deviation, counts the unique loss-level ids, then subtracts each id's event losses from the portfolio event-loss table and rebuilds that excluding curve.</p>
+<p class="field-help">Run Analysis returns to the analysis list. The portfolio event-loss table is given to one worker per core. Each worker takes one risk, writes that excluding curve, and releases the risk before taking the next. Risks already saved are kept. If the application stops, Resume on the analysis list continues from those risks.</p>
 {% else %}
 <p class="muted">No settings saved yet.</p>
 {% endif %}

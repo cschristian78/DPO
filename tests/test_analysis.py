@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 
 from rdm.analysis import (TARGET_POINTS, annual_metrics, downsample_curve,
-                          ep_curve, excluding_annual, leave_one_out_pml,
-                          occurrence_ep, pml_at_points, pml_from_elt,
-                          portfolio_pml_from_portep, subtract_elt)
+                          ep_curve, excluding_annual, excluding_pml,
+                          leave_one_out_pml, occurrence_ep, pml_at_points,
+                          pml_from_elt, portfolio_pml_from_portep, subtract_elt)
 from rdm.math_special import log_gamma, regularized_incomplete_beta
 
 
@@ -32,10 +32,15 @@ def test_ep_curve_ranking():
 
 
 def test_beta_matches_known_values():
+    from rdm.math_special import regularized_incomplete_beta_array
     assert abs(log_gamma(1.0)) < 1e-12
     assert abs(log_gamma(5.0) - np.log(24.0)) < 1e-10
     assert abs(regularized_incomplete_beta(1.0, 1.0, 0.5) - 0.5) < 1e-12
     assert abs(regularized_incomplete_beta(2.0, 2.0, 0.5) - 0.5) < 1e-8
+    xs = np.array([0.2, 0.5, 0.8])
+    got = regularized_incomplete_beta_array(np.full(3, 2.0), np.full(3, 5.0), xs)
+    expect = [regularized_incomplete_beta(2.0, 5.0, float(x)) for x in xs]
+    assert np.allclose(got, expect, atol=1e-8)
 
 
 def test_annual_metrics_from_event_rate():
@@ -45,6 +50,22 @@ def test_annual_metrics_from_event_rate():
     excl_aal, excl_std = excluding_annual([100.0], [0.0], [0.2], [40.0])
     assert abs(excl_aal - 12.0) < 1e-9
     assert abs(excl_std - np.sqrt(720.0)) < 1e-9
+
+
+def test_excluding_curve_annual_metrics():
+    values, aal, stddev = excluding_pml(
+        [1, 2],
+        [100.0, 40.0],
+        [10.0, 0.0],
+        [100.0, 40.0],
+        [0.2, 0.5],
+        {1: 25.0},
+        [10])
+    assert len(values) == 1
+    expect_aal, expect_std = annual_metrics([75.0, 40.0], [7.5, 0.0], [0.2, 0.5])
+    assert abs(aal - expect_aal) < 1e-9
+    assert abs(stddev - expect_std) < 1e-9
+    assert abs(aal - (0.2 * 75.0 + 0.5 * 40.0)) < 1e-9
 
 
 def test_subtracted_elt_curve():
@@ -131,6 +152,10 @@ def test_downsample():
 
 
 if __name__ == "__main__":
+    test_beta_matches_known_values()
+    test_annual_metrics_from_event_rate()
+    test_excluding_curve_annual_metrics()
+    test_subtracted_elt_curve()
     test_ep_curve_ranking()
     test_pml_interpolation_monotonic()
     test_leave_one_out_properties()

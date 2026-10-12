@@ -188,13 +188,23 @@ def occurrence_ep(mean, std, exposure, rate, loss):
     return 1.0 - math.exp(-expected)
 
 
-def pml_from_elt(mean, std, exposure, rate, points):
-    """Loss at each return period from an event loss table."""
+LOSS_TOLERANCE = 1.0
+
+
+def pml_from_elt(mean, std, exposure, rate, points, ceilings=None):
+    """Loss at each return period from an event loss table.
+
+    The search stops when the low and high guesses are within one dollar.
+    ceilings, when given, is the portfolio loss at each return period and
+    caps the search.
+    """
     mean = np.asarray(mean, dtype=float)
     std = np.asarray(std, dtype=float)
     exposure = np.asarray(exposure, dtype=float)
     rate = np.asarray(rate, dtype=float)
     points = np.asarray(points, dtype=float)
+    if ceilings is not None:
+        ceilings = np.asarray(ceilings, dtype=float)
     active = (rate > 0.0) & (mean > 0.0) & np.isfinite(mean)
     if not np.any(active):
         return np.zeros(points.shape)
@@ -205,10 +215,22 @@ def pml_from_elt(mean, std, exposure, rate, points):
             continue
         target = 1.0 / period
         low = 0.0
-        high = maximum
+        high = maximum if ceilings is None else float(ceilings[j])
+        if high <= 0.0:
+            continue
         if occurrence_ep(mean, std, exposure, rate, 0.0) <= target:
             continue
-        for _ in range(40):
+        if occurrence_ep(mean, std, exposure, rate, high) > target:
+            if high >= maximum:
+                out[j] = high
+                continue
+            high = maximum
+            if occurrence_ep(mean, std, exposure, rate, high) > target:
+                out[j] = high
+                continue
+        for _ in range(64):
+            if high - low <= LOSS_TOLERANCE:
+                break
             mid = 0.5 * (low + high)
             if occurrence_ep(mean, std, exposure, rate, mid) > target:
                 low = mid
@@ -216,6 +238,46 @@ def pml_from_elt(mean, std, exposure, rate, points):
                 high = mid
         out[j] = 0.5 * (low + high)
     return out
+
+
+def excluding_pml(event_ids, mean, std, exposure, rate, entity_losses, points, ceilings=None):
+    """Portfolio ELT minus one risk, then the return-period losses of what remains.
+
+    The risk table and the excluding table exist only for this call. ceilings
+    is the portfolio loss at each return period. The search starts one dollar
+    above that loss.
+    """
+    mean = np.asarray(mean, dtype=float)
+    removed = np.zeros(mean.shape, dtype=float)
+    index = {int(event_id): slot for slot, event_id in enumerate(event_ids)}
+    for event_id, loss in entity_losses.items():
+        slot = index.get(int(event_id))
+        if slot is not None:
+            removed[slot] = float(loss or 0)
+    remaining = subtract_elt(mean, removed)
+    del removed
+    scale = np.ones(mean.shape, dtype=float)
+    positive = mean > 0
+    scale[positive] = remaining[positive] / mean[positive]
+    scale[~positive] = 0.0
+    if ceilings is not None:
+        ceilings = np.asarray(ceilings, dtype=float)
+        lifted = np.array(ceilings, dtype=float, copy=True)
+        lifted[ceilings > 0.0] += LOSS_TOLERANCE
+        ceilings = lifted
+    scaled_std = np.asarray(std, dtype=float) * scale
+    values = pml_from_elt(
+        remaining,
+        scaled_std,
+        np.asarray(exposure, dtype=float) * scale,
+        rate,
+        points,
+        ceilings)
+    # AAL is the event rate times the excluding perspvalue. The standard
+    # deviation is the compound-Poisson total of that remaining loss.
+    aal, stddev = annual_metrics(remaining, scaled_std, rate)
+    del remaining, scale, scaled_std
+    return values, float(aal), float(stddev)
 
 
 def downsample_curve(return_periods, losses, max_points=1000):

@@ -61,11 +61,21 @@
 {% if dashboard.result_rows %}
 <section class="card" id="result-tables">
   <h2>EXCL, DIFF, and Exposure</h2>
-  <p class="muted">EP_1 through EP_15 are the return-period columns. EXCL also has the AAL and standard deviation of the portfolio with that risk removed. DIFF has the AAL and standard deviation of the risk. Exposure lists the location attributes gathered from the EDM.</p>
+  <p class="muted">EP_1 through EP_15 are the return-period columns. EXCL has the return-period losses, AAL, and standard deviation of the portfolio with that risk removed. DIFF is the portfolio minus EXCL for each of those metrics. Exposure lists the location attributes gathered from the EDM. Compare joins EXCL and DIFF for the risk ids you select. Click a column heading to sort. Search matches the {{ dashboard.loss_level }} id. Link filters applies that search to every tab. Unlink shows every row.</p>
   <div class="result-tabs" role="tablist" aria-label="Result tables">
     <button type="button" class="active" data-result="EXCL">EXCL</button>
     <button type="button" data-result="DIFF">DIFF</button>
     <button type="button" data-result="EXPOSURE">Exposure</button>
+    <button type="button" data-result="COMPARE">Compare</button>
+  </div>
+  <div class="result-tools">
+    <label for="result-search">{{ dashboard.loss_level }} id
+      <input id="result-search" type="search" autocomplete="off" placeholder="Search {{ dashboard.loss_level }} id">
+    </label>
+    <label class="result-link" for="result-link">
+      <input id="result-link" type="checkbox" checked>
+      Link filters
+    </label>
   </div>
   <div class="result-scroll">
     <table class="grid nums result-grid" id="result-table-excl" data-result="EXCL">
@@ -81,7 +91,7 @@
       </thead>
       <tbody>
         {% for row in dashboard.result_rows if row.result_type == 'EXCL' %}
-        <tr>
+        <tr{% if row.entity_id == 'PORTFOLIO' %} class="portfolio"{% endif %}>
           <td>{{ row.entity_id }}</td>
           <td>{{ row.aal }}</td>
           <td>{{ row.standard_deviation }}</td>
@@ -105,7 +115,7 @@
       </thead>
       <tbody>
         {% for row in dashboard.result_rows if row.result_type == 'DIFF' %}
-        <tr>
+        <tr{% if row.entity_id == 'PORTFOLIO' %} class="portfolio"{% endif %}>
           <td>{{ row.entity_id }}</td>
           <td>{{ row.aal }}</td>
           <td>{{ row.standard_deviation }}</td>
@@ -163,6 +173,18 @@
       </tbody>
     </table>
   </div>
+  <div id="result-compare" hidden>
+    <div class="risk-picker">
+      <label for="risk-search">Risk id</label>
+      <div class="risk-combo">
+        <input id="risk-search" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="risk-suggest" aria-multiselectable="true" placeholder="Type a risk id" autocomplete="off">
+        <ul id="risk-suggest" class="risk-suggest" role="listbox" hidden></ul>
+      </div>
+    </div>
+    <div id="risk-picks" class="risk-picks"></div>
+    <div id="risk-exposure"></div>
+    <div id="risk-curves"></div>
+  </div>
 </section>
 {% endif %}
 
@@ -210,7 +232,8 @@
 <div data-view-panel="impact" {% if view != 'impact' %}hidden{% endif %}>
 <section class="card">
   <h2>PML Impact</h2>
-  <p class="muted">Each option removes the largest marginal locations until the PML drop or the premium limit is reached. Rename a tab by editing its label.</p>
+  <p class="muted">Analyze sorts the DIFF file for the return period, largest first, and keeps locations until their DIFF values meet or just exceed the PML to drop, or the premium limit is reached. That sum is the potential PML reduction, with the premium on those locations. Refresh EP subtracts those locations from the portfolio ELT and recalculates the portfolio PML. Rename a tab by editing its label.</p>
+  <script type="application/json" id="portfolio-pml">{{ dashboard.portfolio_by_period | tojson }}</script>
   <form id="scenario-form" method="get" action="{{ url_for('reports') }}">
     <input type="hidden" name="analysis_id" value="{{ selected }}">
     <input type="hidden" name="view" value="impact">
@@ -242,7 +265,12 @@
         <input name="scenario_premium" type="number" min="0" step="1" value="{{ impact.premium_input }}">
       </label>
     </div>
+    <div class="button-row">
+      <button type="submit" class="primary-button" name="analyze" value="1">Analyze</button>
+      <button type="submit" class="secondary-button" name="refresh_ep" value="1">Refresh EP</button>
+    </div>
   </fieldset>
+  <section class="exhibit">
   <h3>Scenario summary</h3>
   <section class="dashboard-metrics">
     <article>
@@ -254,11 +282,11 @@
       <strong>{{ money(impact.tiv) }}</strong>
     </article>
     <article>
-      <span>PML impacted</span>
+      <span>Potential PML reduction</span>
       <strong>{{ money(impact.cumulative) }}</strong>
     </article>
     <article>
-      <span>Premium impacted</span>
+      <span>Associated premium</span>
       <strong>{{ money(impact.premium) }}</strong>
     </article>
     <article>
@@ -267,10 +295,18 @@
     </article>
     <article>
       <span>New 1/{{ impact.return_period }} PML</span>
-      <strong>{{ money(impact.new_pml) }}</strong>
+      <strong>{% if impact.ep_refreshed %}{{ money(impact.new_pml) }}{% else %}—{% endif %}</strong>
     </article>
   </section>
+  {% if impact.target and not impact.reached %}
+  <p class="muted">The selected DIFF values sum to {{ money(impact.cumulative) }}, short of the {{ money(impact.target) }} PML to drop. Every location at this return period is included.</p>
+  {% endif %}
+  {% if not impact.ep_refreshed %}
+  <p class="muted">Refresh EP builds one event-loss table for the locations above, subtracts it from the portfolio ELT, and recalculates the portfolio PML.</p>
+  {% endif %}
+  </section>
 
+  <section class="exhibit">
   <h3>Where they are</h3>
   <div class="impact-maps">
     <div>
@@ -325,7 +361,9 @@
   <div class="geo-map" aria-label="Location map" data-boundaries-url="{{ url_for('static', filename='geo/counties-10m.json') }}"></div>
   <script type="application/json" class="location-points">{{ impact.points | tojson }}</script>
   <p class="location-map-status muted"></p>
+  </section>
 
+  <section class="exhibit">
   <h3>Expiration</h3>
   {% set expire_peak = impact.timeline | map(attribute='expire') | max %}
   <div class="expire-chart">
@@ -347,7 +385,9 @@
     </ol>
   </div>
   <p class="muted">Count of locations in this option that expire in each calendar month.</p>
+  </section>
 
+  <section class="exhibit">
   <h3>Exposure mix</h3>
   <div class="pie-row">
     {% for title, slices in impact.pies.items() %}
@@ -362,7 +402,9 @@
     </article>
     {% endfor %}
   </div>
+  </section>
 
+  <section class="exhibit">
   <h3>Secondary modifiers</h3>
   <div class="impact-maps">
     {% for title, pairs in impact.modifiers.items() %}
@@ -392,13 +434,15 @@
     </div>
     {% endfor %}
   </div>
+  </section>
 
+  <section class="exhibit">
   <h3>Locations in the set</h3>
   <div class="result-scroll">
     <table class="grid nums">
       <thead>
         <tr>
-          <th>Location</th><th>State</th><th>County</th><th>DTC</th><th>Elevation</th><th>Incept</th><th>Expire</th><th>Marginal</th><th>Cumulative</th>
+          <th>Location</th><th>State</th><th>County</th><th>DTC</th><th>Elevation</th><th>Incept</th><th>Expire</th><th>Marginal</th><th>Cumulative DIFF</th>
         </tr>
       </thead>
       <tbody>
@@ -418,13 +462,11 @@
       </tbody>
     </table>
   </div>
+  </section>
   </div>
   {% else %}
   <p class="muted">This run has no location DIFF rows at the selected return period.</p>
   {% endfor %}
-  <div class="button-row">
-    <button type="submit" class="primary-button" name="analyze" value="1">Analyze</button>
-  </div>
   </form>
 </section>
 </div>
@@ -432,11 +474,19 @@
 <div data-view-panel="map" {% if view != 'map' %}hidden{% endif %}>
 <section class="card">
   <h2>Map View</h2>
-  <p class="muted">Every location is plotted. Five bands split the lowest and highest marginal DIFF at the return period. Edit a band or its color, then apply.</p>
+  <p class="muted">Every location is plotted. Choose marginal DIFF, distance to coast, or elevation. DIFF splits the values at the return period. DTC and elevation use the Set Range bands. Edit a band or its color, then apply.</p>
   {% if map_view and map_view.locations %}
   <div class="map-view-layout">
     <fieldset class="option-settings map-bands">
-      <legend>DIFF ranges</legend>
+      <legend id="band-legend">DIFF ranges</legend>
+      <label for="band-measure">Color by
+        <select id="band-measure">
+          <option value="diff" selected>Marginal DIFF</option>
+          <option value="dtc">DTC</option>
+          <option value="elevation">Elevation</option>
+        </select>
+      </label>
+      <div id="band-period-wrap">
       <label for="band-period">Return period
         <select id="band-period">
           {% for period in dashboard.periods %}
@@ -444,6 +494,7 @@
           {% endfor %}
         </select>
       </label>
+      </div>
       <div class="map-band-head" aria-hidden="true"><span></span><span>From</span><span>To</span><span></span></div>
       <div id="band-rows"></div>
       <button type="button" class="primary-button" id="band-apply">Apply ranges</button>
@@ -467,17 +518,96 @@
 <script src="{{ url_for('static', filename='vendor/topojson-client.min.js') }}"></script>
 <script src="{{ url_for('static', filename='location-map.js') }}"></script>
 <script src="{{ url_for('static', filename='band-map.js') }}"></script>
+<script src="{{ url_for('static', filename='risk-compare.js') }}?v=2"></script>
 <script>
 (function () {
   var tables = document.querySelectorAll('.result-scroll table[data-result]');
   if (!tables.length) return;
   var buttons = document.querySelectorAll('button[data-result]');
+  var search = document.getElementById('result-search');
+  var link = document.getElementById('result-link');
+  var tools = document.querySelector('#result-tables .result-tools');
+  var scroll = document.querySelector('#result-tables .result-scroll');
+  var compare = document.getElementById('result-compare');
+  var current = 'EXCL';
   function apply(kind) {
+    current = kind;
+    var comparing = kind === 'COMPARE';
     buttons.forEach(function (button) {
       button.classList.toggle('active', button.dataset.result === kind);
     });
+    if (tools) tools.hidden = comparing;
+    if (scroll) scroll.hidden = comparing;
+    if (compare) compare.hidden = !comparing;
     tables.forEach(function (table) {
-      table.hidden = table.dataset.result !== kind;
+      table.hidden = comparing || table.dataset.result !== kind;
+    });
+    if (comparing && window.DpoRiskCompare) window.DpoRiskCompare.activate();
+    else applyFilter();
+  }
+  function sortKey(text) {
+    var cleaned = text.replace(/,/g, '').replace(/\u2013/g, '-').trim();
+    if (!cleaned || cleaned === '\u2014' || cleaned === '-') return { empty: true, text: '' };
+    if (/^-?\d+(\.\d+)?$/.test(cleaned)) return { empty: false, num: Number(cleaned) };
+    return { empty: false, text: cleaned.toLowerCase() };
+  }
+  function compareKeys(left, right) {
+    if (left.empty && right.empty) return 0;
+    if (left.empty) return 1;
+    if (right.empty) return -1;
+    if (left.num != null && right.num != null) return left.num - right.num;
+    if (left.num != null) return -1;
+    if (right.num != null) return 1;
+    return left.text.localeCompare(right.text, undefined, { numeric: true, sensitivity: 'base' });
+  }
+  function sortTable(table, index) {
+    var headers = table.querySelectorAll('thead th');
+    var ascending = headers[index].getAttribute('aria-sort') !== 'ascending';
+    headers.forEach(function (header) { header.removeAttribute('aria-sort'); });
+    headers[index].setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
+    var body = table.tBodies[0];
+    var rows = Array.prototype.slice.call(body.rows);
+    var pinned = rows.filter(function (row) { return row.classList.contains('portfolio'); });
+    var rest = rows.filter(function (row) { return !row.classList.contains('portfolio'); });
+    rest.sort(function (a, b) {
+      var left = sortKey(a.cells[index].textContent || '');
+      var right = sortKey(b.cells[index].textContent || '');
+      if (left.empty || right.empty) return compareKeys(left, right);
+      var result = compareKeys(left, right);
+      return ascending ? result : -result;
+    });
+    pinned.concat(rest).forEach(function (row) { body.appendChild(row); });
+  }
+  tables.forEach(function (table) {
+    table.querySelectorAll('thead th').forEach(function (header, index) {
+      header.tabIndex = 0;
+      header.setAttribute('role', 'button');
+      header.title = 'Sort by this column';
+      function sort() { sortTable(table, index); }
+      header.addEventListener('click', sort);
+      header.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        sort();
+      });
+    });
+  });
+  function applyFilter() {
+    var query = search ? search.value.trim().toLowerCase() : '';
+    var linked = !link || link.checked;
+    tables.forEach(function (table) {
+      var useQuery = query && (linked || table.dataset.result === current);
+      Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
+        var id = (row.cells[0].textContent || '').trim().toLowerCase();
+        row.hidden = useQuery ? id.indexOf(query) === -1 : false;
+      });
+    });
+  }
+  if (search) search.addEventListener('input', applyFilter);
+  if (link) {
+    link.addEventListener('change', function () {
+      if (!link.checked && search) search.value = '';
+      applyFilter();
     });
   }
   buttons.forEach(function (button) {
@@ -519,13 +649,13 @@
     var copy = current[0].cloneNode(true);
     copy.dataset.optionPanel = String(index);
     copy.hidden = false;
-    copy.querySelectorAll('.option-exhibits, .geo-map, .location-points, .location-map-status, .dashboard-metrics, h3, .impact-maps, .expire-chart, .timeline, .pie-row, .result-scroll, .muted').forEach(function (node) {
+    copy.querySelectorAll('.exhibit, .option-exhibits, .geo-map, .location-points, .location-map-status, .dashboard-metrics, h3, .impact-maps, .expire-chart, .timeline, .pie-row, .result-scroll, .muted').forEach(function (node) {
       if (node.closest('.scenario-row')) return;
       node.remove();
     });
     var note = document.createElement('p');
     note.className = 'muted';
-    note.textContent = 'Set the return period and a PML drop or premium limit, then choose Analyze.';
+    note.textContent = 'Set the return period and a PML drop or premium limit, then choose Analyze. Refresh EP recalculates the portfolio curve.';
     copy.appendChild(note);
     copy.querySelectorAll('input').forEach(function (input) { input.value = ''; });
     current[current.length - 1].after(copy);
@@ -536,6 +666,25 @@
     add.before(tab);
     show(index);
   });
+  var curveNode = document.getElementById('portfolio-pml');
+  var curve = curveNode ? JSON.parse(curveNode.textContent || '{}') : {};
+  function defaultDrop(period) {
+    var value = Number(curve[String(period)] || 0);
+    return value > 0 ? String(Math.round(value * 0.1)) : '';
+  }
+  var scenarioForm = document.getElementById('scenario-form');
+  if (scenarioForm) {
+    scenarioForm.addEventListener('input', function (event) {
+      if (event.target.name === 'scenario_pml') event.target.dataset.touched = '1';
+    });
+    scenarioForm.addEventListener('change', function (event) {
+      if (event.target.name !== 'scenario_period') return;
+      var panel = event.target.closest('.option-panel');
+      var pml = panel && panel.querySelector('[name="scenario_pml"]');
+      if (!pml || pml.dataset.touched === '1') return;
+      pml.value = defaultDrop(event.target.value);
+    });
+  }
   tabs.addEventListener('click', function (event) {
     if (!event.target.classList.contains('sheet-remove')) return;
     if (sheetTabs().length < 2) return;
