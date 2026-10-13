@@ -345,8 +345,39 @@ input:focus, select:focus { outline: none; border-color: var(--accent-dim); box-
   border: 0; background: transparent; color: var(--accent); font: inherit; font-weight: 700;
   cursor: pointer; padding: 0.1rem 0.35rem; line-height: 1;
 }
-.exposure-summary.column-chart { grid-template-columns: 6.4rem minmax(0, 1fr); margin-top: 0.25rem; }
-.result-scroll table.grid.curve-join { width: max-content; }
+.compare-exhibit {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+}
+.compare-exhibit table.grid { margin: 0; width: max-content; }
+.exposure-fields th, .exposure-fields td { white-space: nowrap; width: auto; padding: 0.4rem 0.55rem; }
+.exposure-fields .metric { position: sticky; left: 0; z-index: 2; background: var(--surface); text-align: left; }
+.exposure-fields thead .metric { z-index: 4; background: var(--surface-deep); }
+.exposure-dashboard-head { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-end; margin: 0.35rem 0 0.8rem; }
+.exposure-dashboard-head h3 { margin: 0 0 0.2rem; }
+.exposure-dashboard-head p { margin: 0; max-width: 52rem; }
+.exposure-chart { margin: 0 0 1.15rem; }
+table.exposure-exhibit { width: max-content; max-width: 100%; border-collapse: collapse; margin: 0.2rem 0 0.4rem; background: transparent; font-size: 0.84rem; }
+table.exposure-exhibit caption { caption-side: top; text-align: left; font-weight: 700; color: var(--white); border-bottom: 2px solid var(--white); padding: 0 0 0.25rem; margin: 0 0 0.35rem; }
+table.exposure-exhibit th, table.exposure-exhibit td { border: 0; background: transparent; padding: 0.18rem 0.85rem; text-align: right; font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0; font-size: 0.84rem; color: var(--text); }
+table.exposure-exhibit th:first-child, table.exposure-exhibit td:first-child { text-align: left; padding-left: 0; font-weight: 600; max-width: 22rem; }
+table.exposure-exhibit thead th { font-weight: 700; color: var(--white); }
+table.exposure-exhibit tfoot td { font-weight: 700; color: var(--white); border-top: 1px solid var(--white); border-bottom: 3px double var(--white); padding-top: 0.35rem; }
+.exposure-chart h3 { margin: 0 0 0.3rem; font-size: 0.95rem; }
+.exposure-legend { margin: 0 0 0.2rem; color: var(--muted); font-size: 0.75rem; }
+.exposure-legend .swatch { display: inline-block; width: 0.55rem; height: 0.55rem; margin: 0 0.3rem 0 0.7rem; vertical-align: -0.05rem; }
+.exposure-legend .swatch.count { background: var(--accent); margin-left: 0; }
+.exposure-legend .swatch.value { background: #1d6fbf; }
+.column-chart.exposure-pair { --plot-label: 1.8rem; }
+.exposure-chart .column-chart { overflow-x: auto; }
+.exposure-pair .share-chart { width: max-content; min-width: 100%; }
+.exposure-pair.names .share-chart { grid-template-columns: repeat(var(--cols), minmax(1.7rem, 1fr)); }
+.exposure-metrics { height: var(--plot-label); display: flex; flex-direction: column; align-items: center; justify-content: flex-end; font-size: 0.62rem; line-height: 0.78rem; }
+.exposure-pair-bars { display: flex; align-items: flex-end; justify-content: center; gap: 0.12rem; width: 100%; height: var(--plot-h); }
+.column-chart.exposure-pair .exposure-pair-bars .impact-track { width: 0.55rem; max-width: none; height: 100%; }
+.exposure-pair .impact-bar.count { background: linear-gradient(180deg, var(--accent), var(--accent-dim)); }
+.exposure-pair .impact-bar.value { background: linear-gradient(180deg, #7eb6ff, #1d6fbf); }
 .curve-join { margin-top: 0.35rem; }
 .curve-join th, .curve-join td { white-space: nowrap; width: auto; padding: 0.4rem 0.45rem; }
 .curve-join .metric {
@@ -371,7 +402,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent-dim); box-
 .map-band-row { margin: 0.3rem 0; }
 .map-band-row input[type="color"] { width: 2.4rem; height: 2rem; padding: 0.1rem; background: transparent; border: 1px solid var(--border); }
 .map-band-count { color: var(--muted); font-size: 0.75rem; text-align: right; }
-.map-bands .primary-button { margin-top: 0.7rem; }
+#band-rows { max-height: 22rem; overflow: auto; }
+.map-band-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.7rem; }
+.map-band-actions .primary-button, .map-band-actions .secondary-button { margin-top: 0; }
+.map-bands.user-defined .map-band-head,
+.map-bands.user-defined .map-band-row {
+  grid-template-columns: 2.4rem minmax(0, 1fr) minmax(0, 1fr) 2.2rem 1.7rem;
+}
+.band-remove {
+  width: 1.7rem; height: 1.7rem; padding: 0; border: 1px solid var(--border); border-radius: 0.25rem;
+  background: transparent; color: var(--text); cursor: pointer; font-size: 1rem; line-height: 1;
+}
 .geo-map.leaflet-container,
 .leaflet-container { background: #dde5ea; }
 .column-chart {

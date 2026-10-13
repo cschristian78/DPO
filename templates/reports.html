@@ -61,12 +61,12 @@
 {% if dashboard.result_rows %}
 <section class="card" id="result-tables">
   <h2>EXCL, DIFF, and Exposure</h2>
-  <p class="muted">EP_1 through EP_15 are the return-period columns. EXCL has the return-period losses, AAL, and standard deviation of the portfolio with that risk removed. DIFF is the portfolio minus EXCL for each of those metrics. Exposure lists the location attributes gathered from the EDM. Compare joins EXCL and DIFF for the risk ids you select. Click a column heading to sort. Search matches the {{ dashboard.loss_level }} id. Link filters applies that search to every tab. Unlink shows every row.</p>
+  <p class="muted">EP_1 through EP_15 are the return-period columns. EXCL has the return-period losses, AAL, and standard deviation of the portfolio with that risk removed. DIFF is the portfolio minus EXCL for each of those metrics. Exposure lists the location attributes gathered from the EDM. Compare joins EXCL and DIFF for the risk ids you select. Click a column heading to sort. Search matches the {{ dashboard.loss_level }} id. Link filters carries every risk id selected on Compare to EXCL and DIFF. Exposure stays the full portfolio. Unlink shows every row.</p>
   <div class="result-tabs" role="tablist" aria-label="Result tables">
     <button type="button" class="active" data-result="EXCL">EXCL</button>
     <button type="button" data-result="DIFF">DIFF</button>
-    <button type="button" data-result="EXPOSURE">Exposure</button>
     <button type="button" data-result="COMPARE">Compare</button>
+    <button type="button" data-result="EXPOSURE">Exposure</button>
   </div>
   <div class="result-tools">
     <label for="result-search">{{ dashboard.loss_level }} id
@@ -77,6 +77,72 @@
       Link filters
     </label>
   </div>
+  {% if exposure_summary %}
+  <div id="exposure-dashboard" hidden>
+    <div class="exposure-dashboard-head">
+      <div>
+        <h3>Exposure summary</h3>
+        <p class="muted">{{ '{:,}'.format(exposure_summary.locations) }} locations. Location value {{ money(exposure_summary.location_value) }}. Each table counts risks and sums location value. Average is location value per risk. The location list below shows the first {{ dashboard.exposure_limit }} of {{ '{:,}'.format(dashboard.exposure_total) }}.</p>
+      </div>
+      <label for="exposure-top">Top states, counties, and postal codes
+        <select id="exposure-top">
+          {% for count in exposure_summary.top_choices %}
+          <option value="{{ count }}"{% if count == exposure_summary.top_default %} selected{% endif %}>{{ count }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    {% for chart in exposure_summary.charts %}
+    <article class="exposure-chart" data-mode="{{ chart.mode }}">
+      <table class="exposure-exhibit">
+        <caption>{{ chart.title }}</caption>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Risks</th>
+            <th>% Risks</th>
+            <th>TIV</th>
+            <th>% TIV</th>
+            <th>Average</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in chart.rows %}
+          <tr{% if row.rank %} data-top-rank="{{ row.rank }}" data-count="{{ row.count }}" data-value="{{ '%.2f'|format(row.value) }}"{% endif %}{% if chart.mode == 'top' and row.rank > exposure_summary.top_default %} hidden{% endif %}>
+            <td>{{ row.label }}</td>
+            <td class="risks">{{ row.risks }}</td>
+            <td class="risk-share">{{ row.risk_share }}</td>
+            <td class="tiv">{{ row.tiv }}</td>
+            <td class="tiv-share">{{ row.tiv_share }}</td>
+            <td class="average">{{ row.average }}</td>
+          </tr>
+          {% endfor %}
+          {% if chart.mode == 'top' %}
+          <tr class="exposure-other" data-tail-count="{{ chart.tail_count }}" data-tail-value="{{ '%.2f'|format(chart.tail_value) }}"{% if chart.other.count == 0 %} hidden{% endif %}>
+            <td>Other</td>
+            <td class="risks">{{ chart.other.risks }}</td>
+            <td class="risk-share">{{ chart.other.risk_share }}</td>
+            <td class="tiv">{{ chart.other.tiv }}</td>
+            <td class="tiv-share">{{ chart.other.tiv_share }}</td>
+            <td class="average">{{ chart.other.average }}</td>
+          </tr>
+          {% endif %}
+        </tbody>
+        <tfoot>
+          <tr data-total-count="{{ chart.total.count }}" data-total-value="{{ '%.2f'|format(chart.total.value) }}">
+            <td>{{ chart.total.label }}</td>
+            <td>{{ chart.total.risks }}</td>
+            <td>{{ chart.total.risk_share }}</td>
+            <td>{{ chart.total.tiv }}</td>
+            <td>{{ chart.total.tiv_share }}</td>
+            <td>{{ chart.total.average }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
   <div class="result-scroll">
     <table class="grid nums result-grid" id="result-table-excl" data-result="EXCL">
       <thead>
@@ -126,7 +192,7 @@
         {% endfor %}
       </tbody>
     </table>
-    <table class="grid nums result-grid" id="result-table-exposure" data-result="EXPOSURE" hidden>
+    <table class="grid nums result-grid" id="result-table-exposure" data-result="EXPOSURE" data-exposure-url="{{ url_for('location_exposures', analysis_id=selected) }}" data-exposure-total="{{ dashboard.exposure_total }}" hidden>
       <thead>
         <tr>
           <th>{{ dashboard.loss_level }} id</th>
@@ -149,7 +215,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for entity_id, exposure in dashboard.exposure.items()|sort %}
+        {% for entity_id, exposure in dashboard.exposure.items() %}
         <tr>
           <td>{{ entity_id }}</td>
           <td>{{ exposure.construction }}</td>
@@ -187,46 +253,6 @@
   </div>
 </section>
 {% endif %}
-
-<section class="card">
-  <h2>Biggest impact at {{ dashboard.return_period }} years</h2>
-  <form class="chart-filters" method="get" action="{{ url_for('reports') }}">
-    <input type="hidden" name="analysis_id" value="{{ selected }}">
-    <input type="hidden" name="view" value="results">
-    <label for="return_period">Return period</label>
-    <select id="return_period" name="return_period">
-      {% for period in dashboard.periods %}
-      <option value="{{ period }}"{% if period == dashboard.return_period %} selected{% endif %}>{{ period }}</option>
-      {% endfor %}
-    </select>
-    <label for="chart_limit">IDs to show</label>
-    <select id="chart_limit" name="chart_limit">
-      {% for count in chart_limits %}
-      <option value="{{ count }}"{% if count == dashboard.chart_limit %} selected{% endif %}>{{ count }}</option>
-      {% endfor %}
-    </select>
-    <button type="submit" class="primary-button">Refresh</button>
-  </form>
-  <p class="muted">Each bar is the marginal loss from removing that {{ dashboard.loss_level|lower }} (portfolio loss minus the excluding loss).</p>
-  {% if dashboard.rows %}
-  <div class="impact-scroll">
-  <ol class="impact-chart">
-    {% for row in dashboard.rows %}
-    <li>
-      <span class="impact-rank">{{ loop.index }}</span>
-      <span class="impact-id">{{ row.entity_id }}</span>
-      <span class="impact-track" aria-hidden="true">
-        <span class="impact-bar" style="width: {{ '%.1f'|format(row.width) }}%"></span>
-      </span>
-      <span class="impact-value">{{ money(row.diff) }}</span>
-    </li>
-    {% endfor %}
-  </ol>
-  </div>
-  {% else %}
-  <p class="muted">The latest run has a portfolio row and no loss-level ids yet.</p>
-  {% endif %}
-</section>
 </div>
 
 <div data-view-panel="impact" {% if view != 'impact' %}hidden{% endif %}>
@@ -474,7 +500,7 @@
 <div data-view-panel="map" {% if view != 'map' %}hidden{% endif %}>
 <section class="card">
   <h2>Map View</h2>
-  <p class="muted">Every location is plotted. Choose marginal DIFF, distance to coast, or elevation. DIFF splits the values at the return period. DTC and elevation use the Set Range bands. Edit a band or its color, then apply.</p>
+  <p class="muted">Every location is plotted. Color by marginal DIFF, Premium to PML Ratio, distance to coast, or elevation. Premium to PML Ratio is premium divided by marginal DIFF. A higher ratio is more premium for the PML the risk adds. It uses the 100-year DIFF when the risk has premium, until you choose another return period. Linear and Equal count use the number of ranges and ReCalc. User defined clears the ranges so you can add or remove each one, then apply. DTC and elevation use the Set Range bands.</p>
   {% if map_view and map_view.locations %}
   <div class="map-view-layout">
     <fieldset class="option-settings map-bands">
@@ -482,6 +508,7 @@
       <label for="band-measure">Color by
         <select id="band-measure">
           <option value="diff" selected>Marginal DIFF</option>
+          <option value="ratio">Premium to PML Ratio</option>
           <option value="dtc">DTC</option>
           <option value="elevation">Elevation</option>
         </select>
@@ -494,10 +521,24 @@
           {% endfor %}
         </select>
       </label>
+      <label for="band-method">Band method
+        <select id="band-method">
+          <option value="linear" selected>Linear</option>
+          <option value="count">Equal count</option>
+          <option value="user">User defined</option>
+        </select>
+      </label>
+      <label id="band-count-wrap" for="band-count">Ranges
+        <input id="band-count" type="number" min="1" max="20" step="1" value="5">
+      </label>
       </div>
       <div class="map-band-head" aria-hidden="true"><span></span><span>From</span><span>To</span><span></span></div>
       <div id="band-rows"></div>
-      <button type="button" class="primary-button" id="band-apply">Apply ranges</button>
+      <div class="map-band-actions">
+        <button type="button" class="secondary-button" id="band-add" hidden>Add range</button>
+        <button type="button" class="secondary-button" id="band-recalc">ReCalc</button>
+        <button type="button" class="primary-button" id="band-apply">Apply ranges</button>
+      </div>
     </fieldset>
     <div>
       <div class="band-map" id="band-map" aria-label="All locations by DIFF range" data-boundaries-url="{{ url_for('static', filename='geo/counties-10m.json') }}"></div>
@@ -506,7 +547,7 @@
   </div>
   <script type="application/json" id="band-map-data">{{ map_view | tojson }}</script>
   {% else %}
-  <p class="muted">This run has no located exposures to plot.</p>
+  <p class="muted">{% if dashboard.loss_level == 'Location' %}This run has no located exposures to plot.{% else %}Coordinates are stored for location analyses. Policy and account maps are not available yet.{% endif %}</p>
   {% endif %}
 </section>
 </div>
@@ -517,8 +558,9 @@
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/topojson-client.min.js') }}"></script>
 <script src="{{ url_for('static', filename='location-map.js') }}"></script>
-<script src="{{ url_for('static', filename='band-map.js') }}"></script>
-<script src="{{ url_for('static', filename='risk-compare.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='band-map.js') }}?v=5"></script>
+<script src="{{ url_for('static', filename='risk-compare.js') }}?v=7"></script>
+<script src="{{ url_for('static', filename='exposure-dashboard.js') }}?v=3"></script>
 <script>
 (function () {
   var tables = document.querySelectorAll('.result-scroll table[data-result]');
@@ -529,6 +571,7 @@
   var tools = document.querySelector('#result-tables .result-tools');
   var scroll = document.querySelector('#result-tables .result-scroll');
   var compare = document.getElementById('result-compare');
+  var exposureDash = document.getElementById('exposure-dashboard');
   var current = 'EXCL';
   function apply(kind) {
     current = kind;
@@ -539,6 +582,8 @@
     if (tools) tools.hidden = comparing;
     if (scroll) scroll.hidden = comparing;
     if (compare) compare.hidden = !comparing;
+    if (exposureDash) exposureDash.hidden = kind !== 'EXPOSURE';
+    if (kind === 'EXPOSURE' && window.DpoExposureDashboard) window.DpoExposureDashboard.activate();
     tables.forEach(function (table) {
       table.hidden = comparing || table.dataset.result !== kind;
     });
@@ -592,17 +637,37 @@
       });
     });
   });
+  function compareIds() {
+    if (!window.DpoRiskCompare || !window.DpoRiskCompare.ids) return [];
+    return window.DpoRiskCompare.ids();
+  }
   function applyFilter() {
     var query = search ? search.value.trim().toLowerCase() : '';
     var linked = !link || link.checked;
+    var picked = linked ? compareIds() : [];
+    var pickedSet = null;
+    if (picked.length > 1) {
+      pickedSet = {};
+      picked.forEach(function (id) { pickedSet[String(id).trim().toLowerCase()] = true; });
+    }
     tables.forEach(function (table) {
-      var useQuery = query && (linked || table.dataset.result === current);
+      var kind = table.dataset.result;
       Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
         var id = (row.cells[0].textContent || '').trim().toLowerCase();
+        if (kind === 'EXPOSURE') {
+          row.hidden = !linked && current === 'EXPOSURE' && query ? id.indexOf(query) === -1 : false;
+          return;
+        }
+        if (pickedSet) {
+          row.hidden = id !== 'portfolio' && !pickedSet[id];
+          return;
+        }
+        var useQuery = query && (linked || kind === current);
         row.hidden = useQuery ? id.indexOf(query) === -1 : false;
       });
     });
   }
+  window.DpoResultFilter = { apply: applyFilter };
   if (search) search.addEventListener('input', applyFilter);
   if (link) {
     link.addEventListener('change', function () {

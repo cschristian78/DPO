@@ -14,6 +14,7 @@ Flow:
                     are also written back to SQL Server.
 """
 
+import math
 import os
 import secrets
 import threading
@@ -271,6 +272,8 @@ def _dashboard_for(analysis_id, return_period, chart_limit=10):
         if chart_limit not in _CHART_LIMITS:
             chart_limit = 10
         rows = rows[:chart_limit]
+        exposure_rows, exposure_total = _location_exposure(
+            analysis_id, limit=_EXPOSURE_LIST_LIMIT)
         peak = rows[0]["diff"] if rows else 0.0
         for item in rows:
             item["width"] = (item["diff"] / peak * 100.0) if peak else 0.0
@@ -316,7 +319,9 @@ def _dashboard_for(analysis_id, return_period, chart_limit=10):
             "rows": rows,
             "chart_limit": chart_limit,
             "result_rows": _result_rows("EXCL") + _result_rows("DIFF"),
-            "exposure": _location_exposure(analysis_id),
+            "exposure": exposure_rows,
+            "exposure_total": exposure_total,
+            "exposure_limit": _EXPOSURE_LIST_LIMIT,
         }
     finally:
         conn.close()
@@ -871,7 +876,12 @@ def _pml_impact(analysis_id, return_period, target, premium_target=None, premium
 
 
 def _location_premiums(analysis):
-    """Policy premium allocated to each location by its share of account TIV."""
+    """Location premium from policy.BLANPREAMT, shared by each location's TIV.
+
+    Premium for every risk level is the policy blanket amount. A location
+    reaches that policy through property, account, and policy on ACCGRPID.
+    Policy and account runs will use the same amount in a later version.
+    """
     if not analysis or not analysis.get("portfolio_id"):
         return {}
     try:
@@ -895,15 +905,13 @@ def _location_premiums(analysis):
                 GROUP BY LOCID
             ) AS c ON c.LOCID = p.LOCID
             LEFT JOIN (
-                SELECT pol.ACCGRPID, SUM(cv.PREMAMT) AS AccountPremium
+                SELECT pol.ACCGRPID, SUM(pol.BLANPREAMT) AS AccountPremium
                 FROM dbo.policy AS pol
-                INNER JOIN dbo.polcvg AS cv ON cv.POLICYID = pol.POLICYID
-                WHERE cv.PERIL = ?
                 GROUP BY pol.ACCGRPID
             ) AS prem ON prem.ACCGRPID = g.ACCGRPID
             WHERE pa.PORTINFOID = ?
             """,
-            peril_id, peril_id, int(analysis["portfolio_id"]))
+            peril_id, int(analysis["portfolio_id"]))
         rows = cur.fetchall()
     finally:
         edm.close()
@@ -1002,6 +1010,7 @@ def _coord_ok(lat, lon):
 
 def _location_map_points(analysis_id, return_period, target):
     """Exposure points for the map. Invalid coordinates are counted and left out."""
+    _ensure_location_exposure(analysis_id)
     conn = _open_dpo()
     try:
         cur = conn.cursor()
@@ -1089,8 +1098,13 @@ def _location_map_points(analysis_id, return_period, target):
     return points, skipped
 
 
-def _map_view_points(analysis_id):
-    """Every located exposure, with marginal DIFF at each return period."""
+def _map_view_points(analysis_id, premiums=None):
+    """Every located exposure, with marginal DIFF and allocated premium.
+
+    Premium to PML Ratio is premium divided by marginal DIFF. The map uses the
+    100-year DIFF as the baseline when the risk has premium.
+    """
+    _ensure_location_exposure(analysis_id)
     conn = _open_dpo()
     try:
         cur = conn.cursor()
@@ -1108,6 +1122,8 @@ def _map_view_points(analysis_id):
     finally:
         conn.close()
     stored, periods = _read_result_curves(analysis_id)
+    if premiums is None:
+        premiums = _location_premiums(_analysis_header(analysis_id))
     ranges = _display_ranges()
     points = []
     skipped = 0
@@ -1136,6 +1152,7 @@ def _map_view_points(analysis_id):
             "street": "" if row[14] is None else str(row[14]).strip(),
             "dtc": None if row[15] is None else float(row[15]),
             "elevation": None if row[16] is None else float(row[16]),
+            "premium": None if entity_id not in premiums else float(premiums.get(entity_id) or 0),
             "diffs": {str(period): float(by_period.get(period, 0.0)) for period in periods},
         })
     def _range_payload(bands):
@@ -1171,6 +1188,7 @@ def reports():
     scenarios = []
     impacts = []
     map_view = None
+    exposure_summary = None
     try:
         choices = _analysis_choices()
         if selected:
@@ -1233,7 +1251,9 @@ def reports():
                         built["pml_input"] = option["pml"]
                         built["premium_input"] = option["premium"]
                         impacts.append(built)
-                map_view = _map_view_points(selected)
+                map_view = _map_view_points(selected, premiums)
+                if dashboard.get("loss_level") == "Location":
+                    exposure_summary = _exposure_summary(selected)
     except Exception as exc:
         error = f"Could not load the dashboard: {exc}"
     return render_template(
@@ -1245,10 +1265,17 @@ def reports():
         scenarios=scenarios,
         impacts=impacts,
         map_view=map_view,
+        exposure_summary=exposure_summary,
         view=view if view in ("results", "impact", "map") else "impact",
         error=error,
         chart_limits=_CHART_LIMITS,
         money=_money)
+
+
+@app.route("/reports/<int:analysis_id>/exposures")
+def location_exposures(analysis_id):
+    rows, _total = _location_exposure(analysis_id)
+    return jsonify(rows)
 
 
 @app.route("/reports/<int:analysis_id>/map-points")
@@ -2240,6 +2267,7 @@ def _entity_event_losses_for_ids(rdm_cur, loss_level, rdm_analysis_id, perspecti
 def _complete_remaining_locations(analysis, batch_size=25):
     """Write excluding curves for loss-level ids missing from the latest run."""
     started = time.perf_counter()
+    _ensure_location_exposure(analysis["id"])
     points, _custom, _defaults = _analysis_ep_points(analysis["id"])
     points = [point for point in points if point > 0][:15]
     settings = _analysis_settings_rows(analysis["id"])
@@ -2653,6 +2681,7 @@ def _save_location_exposure(analysis):
     try:
         cur = dpo.cursor()
         cur.execute("EXEC dbo.usp_LocationExposure_Replace @AnalysisID=?", analysis["id"])
+        cur.fast_executemany = True
         cur.executemany(
             """
             INSERT INTO dbo.tLocationExposure (
@@ -2669,18 +2698,390 @@ def _save_location_exposure(analysis):
     return len(rows)
 
 
-def _location_exposure(analysis_id):
+def _ensure_location_exposure(analysis_id):
+    """Store location ids and coordinates when a location analysis has none.
+
+    Policy and account placement is left for a later version. A location run
+    also stores coordinates when it starts and again when it finishes.
+    """
+    if not any(row["loss_level"] == "Location" for row in _analysis_settings_rows(analysis_id)):
+        return 0
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.tLocationExposure WHERE AnalysisID = ?",
+            analysis_id)
+        stored = int(cur.fetchone()[0])
+    finally:
+        conn.close()
+    if stored:
+        return stored
+    analysis = _analysis_header(analysis_id)
+    if not analysis:
+        return 0
+    return _save_location_exposure(analysis)
+
+
+_EXPOSURE_BUCKETS = 5
+_EXPOSURE_TOP_LIMITS = (5, 10, 25)
+_EXPOSURE_TOP_DEFAULT = 10
+
+
+def _exposure_text(value):
+    """Blank and 0 are Unknown on a category chart."""
+    if value is None:
+        return "Unknown"
+    text = str(value).strip()
+    if text in ("", "0"):
+        return "Unknown"
+    return text
+
+
+def _exposure_number(value, allow_negative=False, unknown_at=None):
+    """Zero is Unknown. Missing values are Unknown. Negatives stay only for elevation."""
+    if value is None or value == "":
+        return None
+    number = float(value)
+    if number == 0 or (number < 0 and not allow_negative):
+        return None
+    if unknown_at is not None and number >= unknown_at:
+        return None
+    return number
+
+
+def _whole_number(value):
+    return abs(value - round(value)) < 0.00005
+
+
+def _exposure_bins(numbers):
+    """Bars for the positive values on Stories, Year built, Floor area, DTC, and Elevation.
+
+    Five or fewer whole steps from the minimum to the maximum keep a bar for
+    each value, so stories 1 through 5 are five bars. A wider span is split
+    into five ranges. Whole numbers from 1 to 10 become 1–2, 3–4, 5–6, 7–8,
+    and 9–10. A value on an interior boundary belongs to the higher range,
+    and the last range includes the maximum.
+    """
+    if not numbers:
+        return []
+    low = min(numbers)
+    high = max(numbers)
+    if _whole_number(low) and _whole_number(high) and all(_whole_number(number) for number in numbers):
+        low_i = int(round(low))
+        high_i = int(round(high))
+        count = high_i - low_i + 1
+        if count <= _EXPOSURE_BUCKETS:
+            return [(float(step), float(step)) for step in range(low_i, high_i + 1)]
+        step = math.ceil(count / _EXPOSURE_BUCKETS)
+        bins = []
+        start = low_i
+        while start <= high_i and len(bins) < _EXPOSURE_BUCKETS:
+            end = high_i if len(bins) == _EXPOSURE_BUCKETS - 1 else min(high_i, start + step - 1)
+            bins.append((float(start), float(end)))
+            start = int(end) + 1
+        return bins
+    distinct = sorted(set(numbers))
+    if len(distinct) <= _EXPOSURE_BUCKETS:
+        return [(number, number) for number in distinct]
+    if high == low:
+        return [(low, high)]
+    width = (high - low) / _EXPOSURE_BUCKETS
+    bins = []
+    for index in range(_EXPOSURE_BUCKETS):
+        start = low + index * width
+        end = high if index == _EXPOSURE_BUCKETS - 1 else low + (index + 1) * width
+        bins.append((start, end))
+    return bins
+
+
+def _exposure_bin_index(value, bins):
+    if not bins:
+        return None
+    contiguous = len(bins) > 1 and all(
+        abs(bins[index][1] - bins[index + 1][0]) < 0.00005
+        for index in range(len(bins) - 1))
+    last = len(bins) - 1
+    for index, (start, end) in enumerate(bins):
+        if abs(start - end) < 0.00005:
+            same = abs(value - start) < 0.00005
+            if not same and _whole_number(value) and _whole_number(start):
+                same = int(round(value)) == int(round(start))
+            if same:
+                return index
+            continue
+        if contiguous:
+            if index == last and start <= value <= end:
+                return index
+            if index < last and start <= value < end:
+                return index
+        elif start <= value <= end:
+            return index
+    return None
+
+
+def _exposure_bin_label(start, end, unit):
+    if abs(start - end) < 0.00005:
+        label = _range_number(start)
+    else:
+        label = f"{_range_number(start)}–{_range_number(end)}"
+    if unit:
+        label = f"{label} {unit}"
+    return label
+
+
+def _compact_money(value):
+    number = float(value or 0)
+    sign = "-" if number < 0 else ""
+    amount = abs(number)
+    for scale, suffix in ((1000000000, "B"), (1000000, "M"), (1000, "K")):
+        if amount >= scale:
+            return f"{sign}${amount / scale:.1f}{suffix}"
+    return f"{sign}${amount:,.0f}"
+
+
+def _exposure_share(part, whole):
+    if not whole:
+        return "0.0%"
+    return f"{part / whole * 100:.1f}%"
+
+
+def _exposure_average(value, count):
+    if not count:
+        return "—"
+    return f"{value / count:,.1f}"
+
+
+def _exposure_table_row(label, count, value, total_count, total_value, rank=None):
+    row = {
+        "label": label,
+        "count": int(count),
+        "value": float(value),
+        "risks": f"{int(count):,}",
+        "risk_share": _exposure_share(count, total_count),
+        "tiv": f"{float(value):,.0f}",
+        "tiv_share": _exposure_share(value, total_value),
+        "average": _exposure_average(value, count),
+    }
+    if rank is not None:
+        row["rank"] = rank
+    return row
+
+
+def _exposure_exhibit(title, groups, mode="all"):
+    """Risks, share of risks, TIV, share of TIV, and average TIV per risk.
+
+    groups is every location in display order. Top profiles keep the first 25
+    names and fold the rest into Other. The total is the whole book.
+    """
+    total_count = sum(count for _label, count, _value in groups)
+    total_value = sum(value for _label, _count, value in groups)
+    other = None
+    tail_count = 0
+    tail_value = 0.0
+    if mode == "top":
+        limit = max(_EXPOSURE_TOP_LIMITS)
+        named = groups[:limit]
+        tail = groups[limit:]
+        rows = [
+            _exposure_table_row(label, count, value, total_count, total_value, rank=index)
+            for index, (label, count, value) in enumerate(named, start=1)
+        ]
+        rest = groups[_EXPOSURE_TOP_DEFAULT:]
+        other = _exposure_table_row(
+            "Other",
+            sum(count for _label, count, _value in rest),
+            sum(value for _label, _count, value in rest),
+            total_count,
+            total_value)
+        tail_count = sum(count for _label, count, _value in tail)
+        tail_value = sum(value for _label, _count, value in tail)
+    else:
+        rows = [
+            _exposure_table_row(label, count, value, total_count, total_value)
+            for label, count, value in groups
+        ]
+    return {
+        "title": title,
+        "mode": mode,
+        "kind": "table",
+        "rows": rows,
+        "other": other,
+        "tail_count": tail_count,
+        "tail_value": tail_value,
+        "total": _exposure_table_row("Total", total_count, total_value, total_count, total_value),
+    }
+
+
+def _exposure_category_chart(title, rows, index, mode="all"):
+    groups = {}
+    for row in rows:
+        label = _exposure_text(row[index])
+        if label not in groups:
+            groups[label] = {"count": 0, "value": 0.0}
+        groups[label]["count"] += 1
+        groups[label]["value"] += float(row[-1] or 0)
+    ranked = sorted(groups.items(), key=lambda item: (-item[1]["value"], -item[1]["count"], item[0]))
+    ordered = [(label, item["count"], item["value"]) for label, item in ranked]
+    return _exposure_exhibit(title, ordered, mode)
+
+
+def _exposure_range_chart(title, rows, index, unit="", allow_negative=False, unknown_at=None):
+    unknown = {"count": 0, "value": 0.0}
+    measured = []
+    for row in rows:
+        amount = float(row[-1] or 0)
+        number = _exposure_number(row[index], allow_negative=allow_negative, unknown_at=unknown_at)
+        if number is None:
+            unknown["count"] += 1
+            unknown["value"] += amount
+        else:
+            measured.append((number, amount))
+    bins = _exposure_bins([number for number, _amount in measured])
+    groups = [{"count": 0, "value": 0.0} for _bin in bins]
+    for number, amount in measured:
+        slot = _exposure_bin_index(number, bins)
+        if slot is None:
+            unknown["count"] += 1
+            unknown["value"] += amount
+            continue
+        groups[slot]["count"] += 1
+        groups[slot]["value"] += amount
+    ordered = [("Unknown", unknown["count"], unknown["value"])]
+    for (start, end), item in zip(bins, groups):
+        ordered.append((_exposure_bin_label(start, end, unit), item["count"], item["value"]))
+    return _exposure_exhibit(title, ordered)
+
+
+def _stories_exhibit(rows, index):
+    """Number of stories in the fixed low-rise through tall bands."""
+    bands = (
+        "Unknown",
+        "1 to 3 stories—Low-rise",
+        "4 to 7 stories—Mid-rise",
+        "8 to 14 stories—High-rise",
+        "15 or more stories—Tall",
+    )
+    groups = [{"count": 0, "value": 0.0} for _band in bands]
+    for row in rows:
+        amount = float(row[-1] or 0)
+        number = _exposure_number(row[index])
+        if number is None:
+            slot = 0
+        else:
+            stories = int(round(number))
+            if stories <= 3:
+                slot = 1
+            elif stories <= 7:
+                slot = 2
+            elif stories <= 14:
+                slot = 3
+            else:
+                slot = 4
+        groups[slot]["count"] += 1
+        groups[slot]["value"] += amount
+    ordered = [(label, item["count"], item["value"]) for label, item in zip(bands, groups)]
+    return _exposure_exhibit("Number of stories", ordered)
+
+
+def _year_built_exhibit(rows, index):
+    """Year built in the fixed Pre-1937 through Post-2000 bands. 9999 is Unknown."""
+    bands = (
+        "Unknown",
+        "Pre-1937",
+        "1937-1973",
+        "1974-1988",
+        "1989-2000",
+        "Post-2000",
+    )
+    groups = [{"count": 0, "value": 0.0} for _band in bands]
+    for row in rows:
+        amount = float(row[-1] or 0)
+        number = _exposure_number(row[index], unknown_at=9999)
+        if number is None:
+            slot = 0
+        else:
+            year = int(round(number))
+            if year < 1937:
+                slot = 1
+            elif year <= 1973:
+                slot = 2
+            elif year <= 1988:
+                slot = 3
+            elif year <= 2000:
+                slot = 4
+            else:
+                slot = 5
+        groups[slot]["count"] += 1
+        groups[slot]["value"] += amount
+    ordered = [(label, item["count"], item["value"]) for label, item in zip(bands, groups)]
+    return _exposure_exhibit("Year built", ordered)
+
+
+def _exposure_summary(analysis_id):
+    """Count and location value by the exposure attributes shown on the map."""
+    _ensure_location_exposure(analysis_id)
     conn = _open_dpo()
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT ExposureLevelID, Construction, Occupancy, NumberOfStories, YearBuilt,
+            SELECT Construction, Occupancy, NumberOfStories, YearBuilt, FloorArea,
+                   DistCoast, Elevation, Admin1Code, Admin2Name, PostalCode, LocationValue
+            FROM dbo.tLocationExposure
+            WHERE AnalysisID = ?
+            """,
+            analysis_id)
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    location_value = sum(float(row[-1] or 0) for row in rows)
+    charts = [
+        _exposure_category_chart("Construction", rows, 0),
+        _exposure_category_chart("Occupancy", rows, 1),
+        _stories_exhibit(rows, 2),
+        _year_built_exhibit(rows, 3),
+        _exposure_range_chart("Floor area", rows, 4),
+        _exposure_range_chart("Distance to coast", rows, 5, unit="mi"),
+        _exposure_range_chart("Elevation", rows, 6, unit="ft", allow_negative=True),
+        _exposure_category_chart("State", rows, 7, mode="top"),
+        _exposure_category_chart("County", rows, 8, mode="top"),
+        _exposure_category_chart("Postal code", rows, 9, mode="top"),
+    ]
+    return {
+        "locations": len(rows),
+        "location_value": location_value,
+        "top_default": _EXPOSURE_TOP_DEFAULT,
+        "top_choices": list(_EXPOSURE_TOP_LIMITS),
+        "charts": charts,
+    }
+
+
+_EXPOSURE_LIST_LIMIT = 100
+
+
+def _location_exposure(analysis_id, limit=None):
+    """Location rows for the exposure list. limit keeps the page to the first ids."""
+    conn = _open_dpo()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.tLocationExposure WHERE AnalysisID = ?",
+            analysis_id)
+        total = int(cur.fetchone()[0])
+        top_sql = ""
+        order_sql = ""
+        if limit:
+            top_sql = f"TOP ({max(1, int(limit))}) "
+            order_sql = " ORDER BY TRY_CONVERT(bigint, ExposureLevelID), ExposureLevelID"
+        cur.execute(
+            f"""
+            SELECT {top_sql}ExposureLevelID, Construction, Occupancy, NumberOfStories, YearBuilt,
                    FloorArea, InceptDate, ExpireDate, Admin1Code, Admin2Name,
                    PostalCode, Latitude, Longitude, LocationValue, DistCoast, Elevation,
                    StreetAddress
             FROM dbo.tLocationExposure
-            WHERE AnalysisID = ?
+            WHERE AnalysisID = ?{order_sql}
             """,
             analysis_id)
         ranges = _display_ranges()
@@ -2706,7 +3107,7 @@ def _location_exposure(analysis_id):
                 "elevation": _band_label(row[15], ranges["elevation"]),
                 "street_address": "" if row[16] is None else str(row[16]).strip(),
             }
-        return found
+        return found, total
     finally:
         conn.close()
 
@@ -2910,6 +3311,7 @@ def _write_portfolio_results(analysis, _entity_limit=None):
     points = [point for point in points if point > 0][:15]
     if not points:
         raise RuntimeError("Save at least one EP point before writing portfolio results.")
+    _ensure_location_exposure(analysis["id"])
     settings = _analysis_settings_rows(analysis["id"])
     if not settings:
         raise RuntimeError("Save a loss level and perspective before writing portfolio results.")

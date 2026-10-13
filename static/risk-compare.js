@@ -10,22 +10,13 @@
   var ids = null;
   var curves = null;
   var exposure = null;
+  var exposureFields = [];
   var periods = null;
   var selected = [];
   var active = -1;
 
   function text(node) {
     return (node && node.textContent ? node.textContent : "").trim();
-  }
-
-  function moneyNumber(value) {
-    var cleaned = String(value || "").replace(/,/g, "").replace(/\u2014/g, "").trim();
-    var number = Number(cleaned);
-    return isFinite(number) ? number : 0;
-  }
-
-  function formatMoney(value) {
-    return Math.round(value).toLocaleString("en-US");
   }
 
   function rowValues(row) {
@@ -62,16 +53,80 @@
         curves[id].diff = rowValues(row);
       });
     }
-    if (exposureTable) {
+    if (exposureTable && exposureTable.tHead && exposureTable.tBodies[0]) {
       var labels = Array.prototype.map.call(exposureTable.tHead.rows[0].cells, text);
-      var valueIndex = labels.indexOf("Location value");
+      var alias = { Admin1: "State", Admin2: "County" };
+      var preferred = [
+        "Construction", "Occupancy", "State", "County", "Street address",
+        "Postal code", "Latitude", "Longitude", "Stories", "Year built",
+        "Floor area", "DTC", "Elevation", "Incept", "Expire", "Location value"
+      ];
+      var present = {};
+      labels.forEach(function (label, index) {
+        if (index === 0) return;
+        present[alias[label] || label] = index;
+      });
+      exposureFields = preferred.filter(function (name) { return present[name] != null; });
+      Object.keys(present).forEach(function (name) {
+        if (exposureFields.indexOf(name) === -1) exposureFields.push(name);
+      });
       Array.prototype.forEach.call(exposureTable.tBodies[0].rows, function (row) {
         var id = text(row.cells[0]);
-        exposure[id] = valueIndex >= 0 ? text(row.cells[valueIndex]) : "";
+        var record = {};
+        exposureFields.forEach(function (name) {
+          record[name] = text(row.cells[present[name]]);
+        });
+        exposure[id] = record;
       });
     }
     ids = Object.keys(curves).sort(function (left, right) {
       return left.localeCompare(right, undefined, { numeric: true });
+    });
+    loadRemainingExposure();
+  }
+
+  function recordFromExposure(row) {
+    var names = {
+      construction: "Construction",
+      occupancy: "Occupancy",
+      stories: "Stories",
+      year_built: "Year built",
+      floor_area: "Floor area",
+      dtc: "DTC",
+      elevation: "Elevation",
+      incept_date: "Incept",
+      expire_date: "Expire",
+      street_address: "Street address",
+      admin1: "State",
+      admin2: "County",
+      postal_code: "Postal code",
+      latitude: "Latitude",
+      longitude: "Longitude",
+      location_value: "Location value"
+    };
+    var record = {};
+    Object.keys(names).forEach(function (key) {
+      var value = row[key];
+      record[names[key]] = value === null || value === undefined ? "" : String(value);
+    });
+    return record;
+  }
+
+  function loadRemainingExposure() {
+    var table = document.getElementById("result-table-exposure");
+    if (!table || !table.dataset.exposureUrl || table.dataset.exposureLoaded === "1") return;
+    var total = Number(table.dataset.exposureTotal || 0);
+    if (total && Object.keys(exposure).length >= total) return;
+    table.dataset.exposureLoaded = "1";
+    fetch(table.dataset.exposureUrl).then(function (response) {
+      return response.json();
+    }).then(function (data) {
+      Object.keys(data || {}).forEach(function (id) {
+        exposure[id] = recordFromExposure(data[id]);
+      });
+      if (selected.length) render();
+    }).catch(function () {
+      table.dataset.exposureLoaded = "";
     });
   }
 
@@ -186,9 +241,9 @@
     });
   }
 
-  function renderExposure() {
+  function renderExposure(ids) {
     exposureHost.innerHTML = "";
-    if (!selected.length) {
+    if (!ids.length) {
       var prompt = document.createElement("p");
       prompt.className = "muted";
       prompt.textContent = "Type a risk id and choose one or more matches. The exposure summary and both PML curves appear here.";
@@ -198,56 +253,34 @@
     var heading = document.createElement("h3");
     heading.textContent = "Exposure summary";
     exposureHost.appendChild(heading);
-    var note = document.createElement("p");
-    note.className = "muted";
-    note.textContent = "Location value of the selected risks.";
-    exposureHost.appendChild(note);
-    var values = selected.map(function (id) { return moneyNumber(exposure[id]); });
-    var peak = values.reduce(function (max, value) { return value > max ? value : max; }, 0);
-    if (!peak) {
-      var missing = document.createElement("p");
-      missing.className = "muted";
-      missing.textContent = "No location value is stored for the selected risks.";
-      exposureHost.appendChild(missing);
-      return;
-    }
-    var chart = document.createElement("div");
-    chart.className = "column-chart exposure-summary" + (selected.length > 8 ? " names" : "");
-    chart.style.setProperty("--cols", String(selected.length));
-    var axis = document.createElement("div");
-    axis.className = "column-yaxis";
-    axis.setAttribute("aria-hidden", "true");
-    [formatMoney(peak), formatMoney(peak / 2), "0"].forEach(function (label) {
-      axis.appendChild(document.createElement("span")).textContent = label;
+    var wrap = document.createElement("div");
+    wrap.className = "compare-exhibit";
+    var table = document.createElement("table");
+    table.className = "grid exposure-fields";
+    var head = table.createTHead().insertRow();
+    var corner = document.createElement("th");
+    corner.className = "metric";
+    corner.textContent = "Exposure";
+    head.appendChild(corner);
+    ids.forEach(function (id) {
+      var risk = document.createElement("th");
+      risk.textContent = id;
+      head.appendChild(risk);
     });
-    var bars = document.createElement("ol");
-    bars.className = "impact-chart share-chart";
-    bars.setAttribute("aria-label", "Location value by risk");
-    selected.forEach(function (id, index) {
-      var item = document.createElement("li");
-      var value = values[index];
-      item.setAttribute("aria-label", id + ": " + formatMoney(value));
-      var amount = document.createElement("span");
-      amount.className = "impact-value";
-      amount.textContent = formatMoney(value);
-      var track = document.createElement("span");
-      track.className = "impact-track";
-      var bar = document.createElement("span");
-      bar.className = "impact-bar";
-      bar.style.height = (value / peak * 100).toFixed(1) + "%";
-      track.appendChild(bar);
-      var name = document.createElement("span");
-      name.className = "impact-id";
-      name.title = id;
-      name.textContent = id;
-      item.appendChild(amount);
-      item.appendChild(track);
-      item.appendChild(name);
-      bars.appendChild(item);
+    var body = table.createTBody();
+    var fields = exposureFields.length ? exposureFields : [
+      "Construction", "Occupancy", "State", "County"
+    ];
+    fields.forEach(function (field) {
+      var row = body.insertRow();
+      addCell(row, field, "metric");
+      ids.forEach(function (id) {
+        var record = exposure[id] || {};
+        addCell(row, record[field] || "");
+      });
     });
-    chart.appendChild(axis);
-    chart.appendChild(bars);
-    exposureHost.appendChild(chart);
+    wrap.appendChild(table);
+    exposureHost.appendChild(wrap);
   }
 
   function addCell(row, value, className) {
@@ -257,9 +290,9 @@
     row.appendChild(cell);
   }
 
-  function renderCurves() {
+  function renderCurves(ids) {
     curveHost.innerHTML = "";
-    if (!selected.length) return;
+    if (!ids.length) return;
     var heading = document.createElement("h3");
     heading.textContent = "PML curves";
     curveHost.appendChild(heading);
@@ -268,7 +301,7 @@
     note.textContent = "Return periods run from the largest down. AAL and standard deviation are the last two rows. EXCL and DIFF sit side by side for each selected risk.";
     curveHost.appendChild(note);
     var wrap = document.createElement("div");
-    wrap.className = "result-scroll";
+    wrap.className = "compare-exhibit";
     var table = document.createElement("table");
     table.className = "grid nums curve-join";
     var head = table.createTHead();
@@ -278,14 +311,14 @@
     corner.rowSpan = 2;
     corner.textContent = "Metric";
     group.appendChild(corner);
-    selected.forEach(function (id) {
+    ids.forEach(function (id) {
       var risk = document.createElement("th");
       risk.colSpan = 2;
       risk.textContent = id;
       group.appendChild(risk);
     });
     var kinds = head.insertRow();
-    selected.forEach(function () {
+    ids.forEach(function () {
       var excl = document.createElement("th");
       excl.textContent = "EXCL";
       var diff = document.createElement("th");
@@ -297,7 +330,7 @@
     function metricRow(label, field) {
       var row = body.insertRow();
       addCell(row, label, "metric");
-      selected.forEach(function (id) {
+      ids.forEach(function (id) {
         var curve = curves[id] || {};
         addCell(row, curve.excl ? curve.excl[field] : "");
         addCell(row, curve.diff ? curve.diff[field] : "");
@@ -314,7 +347,7 @@
     order.forEach(function (item) {
       var row = body.insertRow();
       addCell(row, item.period, "metric");
-      selected.forEach(function (id) {
+      ids.forEach(function (id) {
         var curve = curves[id] || {};
         addCell(row, curve.excl && curve.excl.amounts ? curve.excl.amounts[item.index] : "");
         addCell(row, curve.diff && curve.diff.amounts ? curve.diff.amounts[item.index] : "");
@@ -331,9 +364,11 @@
   }
 
   function render() {
+    var ids = selected.slice();
     renderPicks();
-    renderExposure();
-    renderCurves();
+    renderExposure(ids);
+    renderCurves(ids);
+    if (window.DpoResultFilter) window.DpoResultFilter.apply();
   }
 
   input.addEventListener("input", openList);
@@ -364,6 +399,7 @@
     activate: function () {
       indexTables();
       input.focus();
-    }
+    },
+    ids: function () { return selected.slice(); }
   };
 })();
